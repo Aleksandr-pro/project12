@@ -76,11 +76,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v2.1 >/dev/null 2>&1; then
-            gh release upload v2.1 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v3.0 >/dev/null 2>&1; then
+            gh release upload v3.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v2.1 app/build/outputs/apk/debug/app-debug.apk \
+            gh release create v3.0 app/build/outputs/apk/debug/app-debug.apk \
               --latest \
-              --title "Помощник AI v2.1 — Исправление приёма речи и индикатор микрофона" \
-              --notes "Исправлен захват микрофона на Android 12–15, добавлен автовыбор сервисов речи Google, живая шкала уровня голоса и гарантированный системный голосовой ввод по кнопке."
+              --title "Помощник AI v3.0 — 120+ возможностей, живая речь и понимание контекста" \
+              --notes "Масштабное обновление v3.0: более 120 голосовых действий (фонарик SOS, плеер, полная диагностика памяти/ОЗУ/IP/температуры, встроенный секундомер, курсы валют, скидки/чаевые/деление счёта, конвертер величин, мировое время, Википедия вслух, игра в Города и загадки), понимание бытовых ситуаций своими словами («тут темно», «брать зонт?», «дети спят», «телефон садится?», «хочу есть») и многошаговый контекст диалога («а завтра?», «а в Астане?», «выключи», «наоборот», «ещё», «плюс 150»)."
           fi
