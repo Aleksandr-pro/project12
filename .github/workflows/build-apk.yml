@@ -95,19 +95,20 @@ jobs:
             "$APKSIGNER" verify -v --print-certs "$APK" 2>&1 | sed -n '1,25p' || true
 
             DN=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | grep -m1 "certificate DN" | sed 's/.*certificate DN: //' || true)
+            CERT_SHA=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | grep -m1 "SHA-256 digest" | sed 's/.*SHA-256 digest: //' || true)
             SCHEMES=$("$APKSIGNER" verify -v "$APK" 2>/dev/null | grep -E "^Verified using" | sed 's/Verified using //' | tr '\n' '|' || true)
             BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null | grep -E "^package:|^sdkVersion:|^targetSdkVersion:" | tr '\n' ' ' || true)
             TESTO=$(unzip -p "$APK" AndroidManifest.xml 2>/dev/null | strings | grep -m1 -i "testOnly" || true)
-            SIZE=$(stat -c%s "$APK")
-            SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+            FILE_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
 
             echo "DN: $DN"
+            echo "Certificate SHA-256: $CERT_SHA"
             echo "Schemes: $SCHEMES"
             echo "Badging: $BADGING"
             echo "testOnly marker: ${TESTO:-<none>}"
-            echo "SHA256: $SHA"
+            echo "File SHA256: $FILE_SHA"
 
-            INFO="${INFO}\n${KIND}: ${BADGING} | pubkey-sha256: ${SHA}"
+            INFO="${INFO}\n${KIND}: DN=[${DN:-none}] cert=[${CERT_SHA:-none}] schemes=[${SCHEMES:-none}] testOnly=[${TESTO:-none}] ${BADGING}"
           done
 
           if [ -n "$REL" ] && [ -f "$REL" ]; then cp "$REL" dist/NellyAI-5.2.apk; fi
