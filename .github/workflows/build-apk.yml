@@ -24,39 +24,33 @@ jobs:
           distribution: 'temurin'
           java-version: 17
 
-      - name: Install Android SDK command line tools
+      - name: Ensure Android SDK 34 is available
         run: |
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools/
-          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          rm cmdline-tools.zip
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null
-
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Create local.properties
-        run: |
+          if [ ! -d "$ANDROID_HOME/platforms/android-34" ] || [ ! -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+            mkdir -p "$ANDROID_HOME/cmdline-tools"
+            wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+            unzip -q cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools/"
+            rm -rf "$ANDROID_HOME/cmdline-tools/latest"
+            mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+            rm cmdline-tools.zip
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          fi
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          cache-disabled: true
+      - name: Install Gradle 8.9
+        run: |
+          curl -fL -sS https://github.com/gradle/gradle-distributions/releases/download/v8.9.0/gradle-8.9-bin.zip -o "$RUNNER_TEMP/gradle-8.9-bin.zip"
+          unzip -q "$RUNNER_TEMP/gradle-8.9-bin.zip" -d "$RUNNER_TEMP"
+          rm "$RUNNER_TEMP/gradle-8.9-bin.zip"
+          echo "$RUNNER_TEMP/gradle-8.9/bin" >> "$GITHUB_PATH"
 
       - name: Build Debug APK
         shell: bash
         run: |
           set -o pipefail
           gradle --version
-          if ! gradle assembleDebug --stacktrace 2>&1 | tee build-output.log; then
+          if ! gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build-output.log; then
             ERR_MSG=$(grep -E "(FAILURE:|What went wrong:|^\* | > |e: file:|error: |Exception)" build-output.log | head -n 25 | tr '\n' ' ' | cut -c1-900)
             echo "::error title=Gradle Build Error::${ERR_MSG}"
             tail -n 120 build-output.log

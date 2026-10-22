@@ -5,22 +5,26 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Button
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.example.project12.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityMainBinding
+    private lateinit var tvStatus: TextView
+    private lateinit var btnToggle: Button
     private var isRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_main)
 
-        binding.btnToggle.setOnClickListener { toggleService() }
+        tvStatus = findViewById(R.id.tvStatus)
+        btnToggle = findViewById(R.id.btnToggle)
+
+        btnToggle.setOnClickListener { toggleService() }
         updateUI()
     }
 
@@ -56,12 +60,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI() {
-        binding.tvStatus.text = if (isRunning) getString(R.string.status_running) else getString(R.string.status_stopped)
-        binding.tvStatus.setTextColor(
+        tvStatus.text = if (isRunning) getString(R.string.status_running) else getString(R.string.status_stopped)
+        tvStatus.setTextColor(
             if (isRunning) ContextCompat.getColor(this, R.color.statusRunning)
             else ContextCompat.getColor(this, R.color.statusStopped)
         )
-        binding.btnToggle.text = if (isRunning) getString(R.string.btn_stop) else getString(R.string.btn_start)
+        btnToggle.text = if (isRunning) getString(R.string.btn_stop) else getString(R.string.btn_start)
     }
 
     private fun hasPermissions(): Boolean =
@@ -86,7 +90,7 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == 1001 && hasPermissions()) {
             startAssistantService()
         } else {
-            binding.tvStatus.text = getString(R.string.error_permissions)
+            tvStatus.text = getString(R.string.error_permissions)
         }
     }
 }
