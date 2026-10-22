@@ -315,7 +315,8 @@ class SpeechEngine(
                     rawMatches.withIndex()
                         .sortedWith(
                             compareByDescending<IndexedValue<String>> {
-                                if (it.value.isNaN()) -1f else confidences[it.index]
+                                val score = confidences[it.index]
+                                if (score.isNaN()) -1f else score
                             }.thenBy { it.index }
                         )
                         .map { it.value }
