@@ -37,10 +37,13 @@ jobs:
         run: |
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.2.0
+      - name: Install Gradle
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.2.0-bin.zip -O gradle.zip
+          unzip -q gradle.zip -d /opt
+          rm gradle.zip
+          echo "GRADLE_HOME=/opt/gradle-8.2.0" >> $GITHUB_ENV
+          echo "/opt/gradle-8.2.0/bin" >> $GITHUB_PATH
 
       - name: Generate Gradle wrapper
         run: gradle wrapper
