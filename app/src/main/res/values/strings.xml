@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Помощник AI</string>
+    <string name="btn_start">Запустить помощника</string>
+    <string name="btn_stop">Остановить помощника</string>
+    <string name="status_stopped">Помощник остановлен</string>
+    <string name="status_running">Работает в фоне. Ожидает фразы пробуждения…</string>
+    <string name="notification_channel_id">voice_assistant_channel</string>
+    <string name="notification_channel_name">Голосовой помощник</string>
+    <string name="notification_channel_description">Работа в фоне, прослушивание микрофона и озвучка ответов</string>
+    <string name="notification_title">Помощник работает</string>
+    <string name="notification_text">Фоновое прослушивание включено</string>
+    <string name="msg_listening">Я слушаю…</string>
+    <string name="msg_speaking">Говорю…</string>
+    <string name="error_permissions">Нужно разрешение на запись аудио и интернет</string>
+    <string name="error_no_recognizer">Распознаватель речи недоступен на этом устройстве</string>
+    <string name="cmd_unknown">Команда не распознана. Повторите, пожалуйста.</string>
+</resources>
