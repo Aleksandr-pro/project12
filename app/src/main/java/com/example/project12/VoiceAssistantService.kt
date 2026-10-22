@@ -30,6 +30,7 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     private var pendingStopAfterSpeak = false
     private var pausedForExternalDialog = false
     private var awakeUntilMillis = 0L
+    private var rateMultiplier = 1f
 
     private val ttsFallbackRunnable = Runnable {
         if (!isDestroyed && isSpeaking) {
@@ -47,6 +48,8 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     override fun onCreate() {
         super.onCreate()
         AssistantStateBus.initPrefs(this)
+        VoicePersona.init(this)
+        TradingSettings.init(this)
         createNotificationChannel()
 
         commandProcessor = CommandProcessor(this) { userText, asyncReply ->
@@ -155,6 +158,17 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
                 }
             }
 
+            ACTION_SPEAK_TEXT -> {
+                pausedForExternalDialog = false
+                stopSpeakingInternal()
+                val textToSay = intent.getStringExtra(EXTRA_COMMAND_TEXT).orEmpty().trim()
+                if (textToSay.isNotEmpty()) {
+                    speak(textToSay)
+                } else if (!isSpeaking) {
+                    engine.start()
+                }
+            }
+
             else -> {
                 pausedForExternalDialog = false
                 AssistantStateBus.updateServiceState(
@@ -234,7 +248,8 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         }
 
         result.speechRate?.let { rate ->
-            tts?.setSpeechRate(rate)
+            rateMultiplier = rate
+            tts?.let { VoicePersona.apply(it, rateMultiplier) }
         }
 
         val reply = result.spokenResponse
@@ -262,10 +277,17 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         mainHandler.removeCallbacks(ttsFallbackRunnable)
         speechEngine?.pause()
 
+        val spoken = VoicePersona.prepareTextForSpeech(text)
+        if (spoken.isBlank()) {
+            if (!pausedForExternalDialog) speechEngine?.start()
+            return
+        }
+        tts?.let { VoicePersona.apply(it, rateMultiplier) }
+
         AssistantStateBus.updateServiceState(
             running = true,
             listening = false,
-            status = "🔊 Нелли: $text"
+            status = "🔊 Нелли: $spoken"
         )
 
         if (!ttsReady || tts == null) {
@@ -284,7 +306,7 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         isSpeaking = true
         pendingStopAfterSpeak = stopAfter
         val utteranceId = if (stopAfter) "utt_stop" else "utt_${System.currentTimeMillis()}"
-        val res = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        val res = tts?.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         if (res == TextToSpeech.ERROR) {
             isSpeaking = false
             pendingStopAfterSpeak = false
@@ -296,7 +318,7 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
             return
         }
 
-        val timeoutMs = (text.length * 95L).coerceIn(3500L, 20_000L)
+        val timeoutMs = (spoken.length * 95L).coerceIn(3500L, 20_000L)
         mainHandler.postDelayed(ttsFallbackRunnable, timeoutMs)
     }
 
@@ -304,7 +326,8 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         if (status == TextToSpeech.SUCCESS) {
             tts?.let { engine ->
                 engine.language = Locale("ru", "RU")
-                selectFemaleRussianVoice(engine)
+                VoicePersona.selectVoice(engine)
+                VoicePersona.apply(engine)
             }
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
@@ -424,10 +447,16 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         const val ACTION_EXECUTE_TEXT = "com.example.project12.ACTION_EXECUTE_TEXT"
         const val ACTION_STOP_SPEAKING = "com.example.project12.ACTION_STOP_SPEAKING"
         const val ACTION_STOP_SERVICE = "com.example.project12.ACTION_STOP_SERVICE"
+        const val ACTION_SPEAK_TEXT = "com.example.project12.ACTION_SPEAK_TEXT"
         const val EXTRA_COMMAND_TEXT = "extra_command_text"
         const val EXTRA_CANDIDATES_LIST = "extra_candidates_list"
 
         fun selectFemaleRussianVoice(engine: TextToSpeech) {
+            if (VoicePersona.russianVoices(engine).isNotEmpty()) {
+                VoicePersona.selectVoice(engine)
+                VoicePersona.apply(engine)
+                return
+            }
             try {
                 val voices = engine.voices ?: return
                 val ruVoices = voices.filter { v ->

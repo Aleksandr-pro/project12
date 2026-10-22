@@ -53,6 +53,14 @@ object AssistantStateBus {
         private set
 
     @Volatile
+    var tradingStatusText: String = ""
+        private set
+
+    @Volatile
+    var lastSignalText: String = ""
+        private set
+
+    @Volatile
     private var activeActivityRef: WeakReference<Activity>? = null
 
     fun setActiveActivity(activity: Activity?) {
@@ -108,6 +116,14 @@ object AssistantStateBus {
 
     fun updatePartialSpeech(partial: String) {
         partialSpeech = partial
+        notifyListeners()
+    }
+
+    fun updateTradingStatus(status: String, signalText: String? = null) {
+        tradingStatusText = status
+        if (signalText != null) {
+            lastSignalText = signalText
+        }
         notifyListeners()
     }
 

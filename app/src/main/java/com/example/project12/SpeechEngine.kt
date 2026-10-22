@@ -298,15 +298,38 @@ class SpeechEngine(
                 silenceStreak = 0
                 errorStreakOnCurrentProvider = 0
 
-                val matches = results
+                val rawMatches = results
                     ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     .orEmpty()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
 
+                // v5.0: сортируем гипотезы по уверенности распознавателя —
+                // это заметно уменьшает «недопонимания» на слух.
+                val confidences = try {
+                    results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
+                } catch (_: Exception) {
+                    null
+                }
+                val matches = if (confidences != null && confidences.size == rawMatches.size) {
+                    rawMatches.withIndex()
+                        .sortedWith(
+                            compareByDescending<IndexedValue<String>> {
+                                val score = confidences[it.index]
+                                if (score.isNaN()) -1f else score
+                            }.thenBy { it.index }
+                        )
+                        .map { it.value }
+                } else {
+                    rawMatches
+                }
+
                 if (matches.isEmpty()) {
                     scheduleStart(700L)
                 } else {
+                    AssistantStateBus.updateDiagnostic(
+                        "Распознано вариантов: ${matches.size} — «${matches.first()}»"
+                    )
                     onRecognized(matches)
                 }
             }
