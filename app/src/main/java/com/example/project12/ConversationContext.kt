@@ -8,7 +8,8 @@ enum class PendingSlot {
     TASK_ITEM,
     SEARCH_QUERY,
     TRANSLATE_PHRASE,
-    OPEN_APP_NAME
+    OPEN_APP_NAME,
+    CALL_TARGET
 }
 
 data class RiddleItem(
@@ -118,7 +119,7 @@ object ConversationContext {
         synchronized(recentTurns) {
             if (recentTurns.isEmpty()) return ""
             return recentTurns.joinToString("\n") { (u, a) ->
-                "Пользователь: $u\nПомощник: $a"
+                "Пользователь: $u\nНелли: $a"
             }
         }
     }

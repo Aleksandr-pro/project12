@@ -32,7 +32,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="v3.0 • Понимает живую речь, контекст и 120+ действий"
+                android:text="Нелли v3.1 • Звонки контактам, умный запуск приложений и живой контекст"
                 android:textColor="@color/colorPrimary"
                 android:textSize="12.5sp"
                 android:textStyle="bold" />
@@ -52,7 +52,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="Говорите своими словами — не нужно заучивать точные команды!"
+                android:text="Скажите: «Позвони маме», «Включи Ватсап / Ютуб / Инстаграм / Телеграм»"
                 android:textColor="@color/textPrimary"
                 android:textSize="14sp" />
 
@@ -72,7 +72,7 @@
                 android:backgroundTint="@color/colorAccent"
                 android:paddingTop="13dp"
                 android:paddingBottom="13dp"
-                android:text="🎤 Нажать и сказать своими словами"
+                android:text="🎤 Нажать и сказать Нелли"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF"
                 android:textSize="16sp"
@@ -97,7 +97,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="12dp"
                 android:checked="true"
-                android:text="Прямое распознавание (без слова «Помощник»)"
+                android:text="Прямое распознавание (без обращения «Нелли»)"
                 android:textColor="@color/textPrimary"
                 android:textSize="15sp" />
 
@@ -106,7 +106,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="ВКЛ: говорите сразу как человеку («тут темно», «брать зонт?», «а завтра?»)."
+                android:text="ВКЛ: говорите сразу («позвони маме», «включи инстаграм», «брать зонт?»)."
                 android:textColor="@color/textSecondary"
                 android:textSize="13sp" />
         </LinearLayout>
@@ -123,7 +123,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Написать запрос или вопрос текстом"
+                android:text="Написать команду для Нелли текстом"
                 android:textColor="@color/textPrimary"
                 android:textSize="15sp"
                 android:textStyle="bold" />
@@ -140,7 +140,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="Например: сколько будет 100 долларов в тенге"
+                    android:hint="Например: позвони маме / открой ватсап"
                     android:imeOptions="actionSend"
                     android:inputType="text"
                     android:maxLines="1"
@@ -176,7 +176,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="История диалога (контекст активен)"
+                    android:text="История диалога с Нелли"
                     android:textColor="@color/textPrimary"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -219,7 +219,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="120+ возможностей и живой контекст"
+                android:text="Что умеет Нелли (120+ возможностей)"
                 android:textColor="@color/textPrimary"
                 android:textSize="16sp"
                 android:textStyle="bold" />
@@ -229,7 +229,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:hint="🔍 Быстрый поиск по возможностям (например: валюта, таймер, игры)…"
+                android:hint="🔍 Поиск по умениям (звонки, инстаграм, валюта, таймер)…"
                 android:inputType="text"
                 android:maxLines="1"
                 android:textColor="@color/textPrimary"

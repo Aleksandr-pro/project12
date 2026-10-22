@@ -242,9 +242,9 @@ class SpeechEngine(
                 mainHandler.postDelayed(listenWatchdogRunnable, 25_000L)
 
                 val modeHint = if (AssistantStateBus.directMode) {
-                    "🟢 Микрофон слушает — говорите команду"
+                    "🟢 Нелли слушает — говорите своими словами"
                 } else {
-                    "🟢 Слушаю — начните со слова «Помощник»"
+                    "🟢 Нелли ждёт обращения — скажите «Нелли, …»"
                 }
                 AssistantStateBus.updateServiceState(
                     running = true,

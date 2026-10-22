@@ -94,14 +94,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (AssistantStateBus.isServiceRunning) {
                 stopAssistantService()
             } else {
-                ensureMicPermission {
+                ensureAppPermissions {
                     startAssistantService()
                 }
             }
         }
 
         btnSpeakOnce.setOnClickListener {
-            ensureMicPermission {
+            ensureAppPermissions {
                 openSystemSpeechDialog()
             }
         }
@@ -161,7 +161,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
         tvCommandsGuide.text = if (matchedBlocks.isEmpty()) {
-            "По фильтру «$rawQuery» примеров не найдено — но вы всё равно можете сказать это своими словами, помощник поймёт контекст!"
+            "По фильтру «$rawQuery» примеров не найдено — но вы всё равно можете сказать это Нелли своими словами!"
         } else {
             matchedBlocks.joinToString("\n\n")
         }
@@ -208,7 +208,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            localTts?.language = Locale("ru", "RU")
+            localTts?.let { engine ->
+                engine.language = Locale("ru", "RU")
+                VoiceAssistantService.selectFemaleRussianVoice(engine)
+            }
             localTtsReady = true
         }
     }
@@ -252,7 +255,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите своими словами (например: тут темно, брать зонт?, курс доллара)…")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите Нелли (например: позвони маме, включи инстаграм, ватсап)…")
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             }
             try {
@@ -316,25 +319,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun executeLocalCandidates(candidates: List<String>) {
         if (candidates.isEmpty()) return
-        val primary = candidates.first()
-        val (_, stripped) = localCommandProcessor.stripWakeWordPrefix(primary)
-        val effective = stripped.ifEmpty { primary }
-
-        var res = localCommandProcessor.process(effective)
-        var chosenDisplay = primary
-
-        if (!res.matched && candidates.size > 1) {
-            for (alt in candidates.drop(1)) {
-                val (_, altStripped) = localCommandProcessor.stripWakeWordPrefix(alt)
-                val altCmd = altStripped.ifEmpty { alt }
-                val altRes = localCommandProcessor.process(altCmd)
-                if (altRes.matched) {
-                    res = altRes
-                    chosenDisplay = alt
-                    break
-                }
-            }
-        }
+        val (chosenDisplay, res) = localCommandProcessor.processCandidates(candidates)
+        if (chosenDisplay.isEmpty()) return
 
         res.speechRate?.let { localTts?.setSpeechRate(it) }
         if (res.stopSpeakingOnly) {
@@ -351,9 +337,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun updateModeHint(direct: Boolean) {
         tvModeDescription.text = if (direct) {
-            "ВКЛ: говорите сразу как человеку («тут темно», «брать зонт?», «а завтра?»)."
+            "ВКЛ: говорите сразу («позвони маме», «включи инстаграм», «ватсап», «брать зонт?»)."
         } else {
-            "ВЫКЛ: начинайте со слова «Помощник» (уточняющие ответы понимает и без ключевого слова)."
+            "ВЫКЛ: начинайте с имени «Нелли» (например: «Нелли, позвони маме» или «Нелли, включи ютуб»)."
         }
     }
 
@@ -379,10 +365,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val partial = AssistantStateBus.partialSpeech
         tvPartial.text = when {
-            partial.isNotEmpty() -> "🎤 Слышу: «$partial»"
-            running && AssistantStateBus.isListeningNow -> "Говорите свободно — полоса выше показывает уровень вашего голоса"
-            running -> "Обработка…"
-            else -> "Говорите своими словами без заучивания команд — нажмите зелёную кнопку 🎤"
+            partial.isNotEmpty() -> "🎤 Нелли слышит: «$partial»"
+            running && AssistantStateBus.isListeningNow -> "Говорите Нелли — шкала выше показывает уровень вашего голоса"
+            running -> "Нелли обрабатывает запрос…"
+            else -> "Скажите: «Позвони маме», «Включи Ютуб / Ватсап / Телеграм / Инстаграм» — нажмите 🎤"
         }
 
         val diag = AssistantStateBus.diagnosticInfo
@@ -403,7 +389,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             tvHistory.text = "Пока нет выполненных команд."
         } else {
             tvHistory.text = entries.take(12).joinToString("\n\n") { e ->
-                "[${e.time}] Вы: ${e.userText}\n🤖 ${e.assistantText}"
+                "[${e.time}] Вы: ${e.userText}\n👩 Нелли: ${e.assistantText}"
             }
         }
     }
@@ -411,19 +397,46 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private fun ensureMicPermission(onGranted: () -> Unit) {
-        if (hasMicPermission()) {
-            onGranted()
-            return
+    private fun ensureAppPermissions(onReady: () -> Unit) {
+        val needed = mutableListOf<String>()
+        if (!hasMicPermission()) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
         }
-        pendingActionAfterPermission = onGranted
-        val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED &&
+            !prefsPromptedContactsOnce()
+        ) {
+            needed.add(Manifest.permission.READ_CONTACTS)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED &&
+            !prefsPromptedContactsOnce()
+        ) {
+            needed.add(Manifest.permission.CALL_PHONE)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+                !prefsPromptedContactsOnce()
+            ) {
+                needed.add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        ActivityCompat.requestPermissions(this, perms.toTypedArray(), REQ_PERMISSIONS)
+
+        if (needed.isEmpty()) {
+            onReady()
+            return
+        }
+
+        markPromptedContactsOnce()
+        pendingActionAfterPermission = onReady
+        ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_PERMISSIONS)
+    }
+
+    private fun prefsPromptedContactsOnce(): Boolean =
+        getSharedPreferences("assistant_prefs", MODE_PRIVATE).getBoolean("prompted_call_perms", false)
+
+    private fun markPromptedContactsOnce() {
+        getSharedPreferences("assistant_prefs", MODE_PRIVATE).edit()
+            .putBoolean("prompted_call_perms", true)
+            .apply()
     }
 
     override fun onRequestPermissionsResult(
@@ -445,82 +458,58 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun buildGuideSections(): List<String> = listOf(
         """
-🧠 ПОНИМАНИЕ СВОИМИ СЛОВАМИ И КОНТЕКСТ (НЕ НУЖНО УЧИТЬ КОМАНДЫ!)
-• Ситуации из жизни: «Тут совсем темно / уронил под диван» → включит фонарик
-• «Слепит / свет дали» → выключит фонарик
-• «Я на совещании / дети спят / в кино» → выключит звук
-• «Слишком орёт / уши болят» → сделает потише; «Плохо слышно» → прибавит звук
+📞 ЗВОНКИ КОНТАКТАМ И ЗАПУСК ПРИЛОЖЕНИЙ С ПОНИМАНИЕМ ПРОИЗНОШЕНИЯ
+• Звонки по имени из телефонной книги: «Позвони маме», «Набери папу», «Включи звонок Саше», «Позвони Арману»
+• Понимает склонения и ласковые/полные имена: «Саше» ↔ «Александр», «Диме» ↔ «Дмитрий», «Лене» ↔ «Елена», «Мамочке» ↔ «Мама»
+• Связь в WhatsApp по имени контакта: «Позвони маме по Ватсапу», «Напиши Саше в Ватсап скоро приеду»
+• Умное открытие приложений (понимает «открой», «включи», «запусти», «зайди в» или просто название, даже при неточном произношении!):
+  — YouTube («включи ютуб / ютюб / youtube»)
+  — WhatsApp («открой ватсап / вотсап / вацап / вотсаб»)
+  — Telegram («включи телеграм / телегу / тилеграм»)
+  — Instagram («открой инстаграм / инсту / инстограмм»)
+  — Kaspi.kz, Halyk, 2ГИС, TikTok, ВК, Яндекс Go, inDrive, Wildberries, Ozon, OLX, Колёса, Крыша и любые установленные у вас приложения!
+        """.trimIndent(),
+        """
+👩 ОБРАЩЕНИЕ К НЕЛЛИ И ЖИВОЙ КОНТЕКСТ (НЕ НУЖНО УЧИТЬ КОМАНДЫ!)
+• Помощницу зовут Нелли — можете обращаться «Нелли, позвони маме» или говорить команды сразу
+• Бытовые ситуации: «Тут совсем темно / уронил ключи» → включит фонарик; «Дети спят / я на совещании» → выключит звук
 • «Брать зонт? / холодно на улице? / как одеться?» → проверит погоду и подскажет одежду
-• «Телефон садится? / доживёт до вечера?» → проверит батарею; «Телефон горячий» → температура
-• «Варить пельмени 8 минут / поставил духовку на 25 минут» → сам поставит таймер
-• «Мне завтра рано вставать в 6:40» → поставит будильник
-• «Хочу есть / хочу кофе / болит голова / кончается бензин / снять наличку» → найдёт рядом на карте
-• Память диалога: скажите «А завтра?», «А в Астане?», «Выключи», «Наоборот», «Ещё», «Повтори», «Плюс 150 / раздели пополам»!
-• Уточняющий диалог: если сказать просто «Поставь таймер» или «Запиши заметку» — сам переспросит детали!
+• «Телефон садится?» → проверит батарею; «Варить пельмени 8 минут» → поставит таймер
+• «Хочу есть / кончается бензин / болит голова / снять наличку» → найдёт рядом на карте
+• Память диалога: «А завтра?», «А в Астане?», «Выключи», «Наоборот», «Ещё», «Повтори», «Раздели пополам»
         """.trimIndent(),
         """
-🔦 ФОНАРИК, ЗВУК, ПЛЕЕР И ВИБРАЦИЯ (18 команд)
-• «Включи / выключи фонарик», «Помигай фонариком», «Сигнал СОС»
-• «Проверь вибрацию / пожужжи»
-• «Громче», «Тише», «Громкость на 40 процентов», «На половину», «На максимум», «Без звука», «Включи звук»
+🔦 ФОНАРИК, ЗВУК, ПЛЕЕР И ВИБРАЦИЯ
+• «Включи / выключи фонарик», «Помигай фонариком», «Сигнал СОС», «Проверь вибрацию»
+• «Громче», «Тише», «Громкость на 40 процентов», «На максимум», «Без звука», «Включи звук»
 • «Какая сейчас громкость», «Звонок громче / тише», «Будильник громче / тише»
-• Управление плеером: «Пауза», «Продолжи музыку», «Следующий трек», «Предыдущий трек»
+• Плеер: «Пауза», «Продолжи музыку», «Следующий трек», «Предыдущий трек»
         """.trimIndent(),
         """
-📊 ПОЛНАЯ ДИАГНОСТИКА УСТРОЙСТВА (11 команд)
-• «Диагностика телефона / полный отчёт» (сводка всего устройства)
-• «Сколько заряда», «Температура батареи»
-• «Сколько свободной памяти / сколько гигабайт», «Оперативная память (ОЗУ)»
-• «Есть ли интернет / какая сеть», «Мой IP-адрес»
-• «Сколько работает без перезагрузки», «Модель телефона / версия Android», «Часовой пояс», «Язык системы»
+📊 ПОЛНАЯ ДИАГНОСТИКА УСТРОЙСТВА
+• «Диагностика телефона / полный отчёт», «Сколько заряда», «Температура батареи»
+• «Сколько свободной памяти», «Оперативная память (ОЗУ)», «Есть ли интернет», «Мой IP-адрес»
+• «Сколько работает без перезагрузки», «Модель телефона», «Часовой пояс»
         """.trimIndent(),
         """
-⏰ БУДИЛЬНИКИ, ТАЙМЕРЫ, ГОЛОСОВОЙ СЕКУНДОМЕР (12 команд)
+⏰ БУДИЛЬНИКИ, ТАЙМЕРЫ, ГОЛОСОВОЙ СЕКУНДОМЕР
 • «Поставь будильник на 7:30», «Разбуди через 40 минут», «Покажи будильники»
 • «Поставь таймер на 10 минут», «Засеки полторы минуты», «Покажи таймеры»
-• Встроенный секундомер: «Засеки время / запусти секундомер» → «Сколько прошло» → «Останови секундомер»
-• Голосовое напоминание: «Скажи через 30 секунд проверить чайник»
-• «Добавь в календарь встреча в 15:00», «Открой календарь»
+• Встроенный секундомер: «Засеки время» → «Сколько прошло» → «Останови секундомер»
+• Напоминание вслух: «Скажи через 30 секунд проверить чайник», «Добавь в календарь …»
         """.trimIndent(),
         """
-💱 ЖИВЫЕ КУРСЫ ВАЛЮТ, СЧЁТ, СКИДКИ И КОНВЕРТЕР ЕДИНИЦ (18 команд)
-• Валюты онлайн: «Курс доллара», «Курс евро», «Сколько будет 150 долларов в тенге», «25000 тенге в рублях», «Юани / лиры / дирхамы / фунты»
-• Финансы в быту: «Скидка 30 процентов от 14000», «Чаевые 10 процентов от 8500», «Раздели счёт 16000 на четверых»
-• Устный счёт + цепочка: «245 умножить на 18», а следом «Минус 15 процентов» или «Раздели на 3»!
-• «Корень из 225», «12 в квадрате», «5 в кубе», «2 в степени 10»
-• Конвертер: мили ↔ км, дюймы ↔ см, футы ↔ м, фунты ↔ кг, унции ↔ г, галлоны ↔ литры, Фаренгейты ↔ Цельсии, м/с ↔ км/ч
+💱 ЖИВЫЕ КУРСЫ ВАЛЮТ, СЧЁТ, СКИДКИ И КОНВЕРТЕР ЕДИНИЦ
+• Валюты онлайн: «Курс доллара», «Курс евро», «Сколько будет 150 долларов в тенге», «25000 тенге в рублях»
+• Финансы: «Скидка 30 процентов от 14000», «Чаевые 10 процентов от 8500», «Раздели счёт 16000 на четверых»
+• Устный счёт + цепочка: «245 умножить на 18», а следом «Минус 15 процентов»!
+• Конвертер: мили ↔ км, дюймы ↔ см, футы ↔ м, фунты ↔ кг, галлоны ↔ литры, °F ↔ °C, м/с ↔ км/ч
         """.trimIndent(),
         """
-🌤 ПОГОДА, МИРОВОЕ ВРЕМЯ И ДАТЫ (12 команд)
-• «Какая погода», «Погода завтра», «Погода в Алматы / Москве / Дубае», «Мой город Актобе»
-• «Сколько времени», «Сколько времени в Токио / Лондоне / Нью-Йорке / Астане / Москве» (25+ мировых столиц)
-• «Какая сегодня дата», «Какой послезавтра день недели», «Номер недели»
-• «Какое число будет через 45 дней», «Сколько дней до Нового года», «Сколько дней до лета»
-        """.trimIndent(),
-        """
-📝 ЗАМЕТКИ, СПИСОК ПОКУПОК, ЗАДАЧИ И ПАРОЛИ (15 команд)
-• Заметки: «Запомни парковка сектор Б4», «Прочитай заметки», «Найди в заметках парковка», «Удали заметку номер 2», «Очисти заметки»
-• Покупки: «Добавь в покупки хлеб и сыр», «Что нужно купить», «Вычеркни из покупок хлеб», «Очисти список покупок»
-• Задачи на день: «Добавь задачу позвонить в банк», «Мои задачи / список дел», «Очисти задачи»
-• Безопасность и буфер: «Сгенерируй надёжный пароль», «Придумай ПИН-код», «Скопируй текст …», «Поделись текстом …»
-        """.trimIndent(),
-        """
-📞 СВЯЗЬ, МЕССЕНДЖЕРЫ, КАРТЫ И 15 РАЗДЕЛОВ НАСТРОЕК (22 команды)
-• «Напиши в Ватсап скоро приеду», «Напиши в Телеграм привет», «Напиши СМС …», «Напиши письмо …»
-• «Позвони на номер …», «Создай контакт …», «Скорая помощь (103)», «Служба спасения (112)»
-• «Где я сейчас», «Маршрут до аэропорта», «Ближайшая аптека / кафе / кофейня / АЗС / банкомат / автомойка / шиномонтаж / стоматология / супермаркет»
-• «Открой любое приложение» (WhatsApp, Telegram, Kaspi, Halyk, 2ГИС, YouTube, Instagram, TikTok, Spotify и др.), «Установлен ли Kaspi»
-• «Сделай фото», «Сними видео», «Открой диктофон», «Открой загрузки», «Открой галерею»
-• Настройки: Wi-Fi, Bluetooth, точка доступа, NFC, звук, экран и яркость, энергосбережение, хранилище, безопасность, дата, геолокация, авиарежим, мобильная сеть, приложения
-        """.trimIndent(),
-        """
-🌍 ЭНЦИКЛОПЕДИЯ ВСЛУХ, ПЕРЕВОД И ГОЛОСОВЫЕ ИГРЫ (16 команд)
-• Свободные вопросы и Википедия вслух: «Кто такой Альберт Эйнштейн», «Что такое чёрная дыра», «Расскажи про Казахстан» (озвучит голосом!)
-• «Переведи на английский / казахский / немецкий / турецкий / китайский / испанский …» (12 языков)
-• «Последние новости», «Покажи картинки северного сияния», «Найди рецепт плова»
-• Интерактивные игры голосом: «Сыграем в города!», «Загадай загадку» (с подсказками и проверкой ответа!)
-• Выбор за вас: «Пицца или суши?», «Чай или кофе?», «Стоит ли идти гулять?»
-• «Подбрось монетку», «Брось два кубика», «Случайное число от 1 до 500», «Расскажи анекдот», «Интересный факт», «Дыхательное упражнение»
+🌤 ПОГОДА, МИРОВОЕ ВРЕМЯ, ЗАМЕТКИ, ПОКУПКИ И ИГРЫ
+• «Какая погода», «Погода завтра», «Погода в Алматы / Актобе / Астане», «Сколько времени в Токио / Лондоне / Москве»
+• Заметки, покупки, задачи: «Запомни …», «Добавь в покупки …», «Вычеркни из покупок …», «Добавь задачу …», «Сгенерируй пароль»
+• Энциклопедия и игры: «Кто такой Альберт Эйнштейн», «Сыграем в города!», «Загадай загадку», «Пицца или суши?»
         """.trimIndent()
     )
 

@@ -178,7 +178,10 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
             return
         }
 
-        val (hadWakeWord, stripped) = commandProcessor.stripWakeWordPrefix(primary)
+        val wakeChecks = matches.map { commandProcessor.stripWakeWordPrefix(it) }
+        val wakeIndex = wakeChecks.indexOfFirst { it.first }
+        val hadWakeWord = wakeIndex >= 0
+        val stripped = if (wakeIndex >= 0) wakeChecks[wakeIndex].second else primary
 
         if (!AssistantStateBus.directMode) {
             val interactiveDialogueActive = ConversationContext.peekPendingSlot() != null ||
@@ -193,7 +196,7 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
             }
             if (hadWakeWord && stripped.isEmpty()) {
                 awakeUntilMillis = System.currentTimeMillis() + 15_000L
-                val reply = "Слушаю вас, говорите своими словами."
+                val reply = "Да, я здесь! Слушаю вас."
                 AssistantStateBus.addDialogue(primary, reply)
                 speak(reply)
                 return
@@ -205,7 +208,7 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
 
         // Direct mode (default): execute immediately
         if (hadWakeWord && stripped.isEmpty()) {
-            val reply = "Я слушаю напрямую — сразу произносите команду!"
+            val reply = "Да, я Нелли! Слушаю вас напрямую — говорите, что сделать."
             AssistantStateBus.addDialogue(primary, reply)
             speak(reply)
             return
@@ -215,28 +218,8 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun executeCandidateListDirectly(matches: List<String>) {
-        val primary = matches.first().trim()
-        val (hadWake, stripped) = commandProcessor.stripWakeWordPrefix(primary)
-        val firstCmd = if (hadWake && stripped.isNotEmpty()) stripped else primary
-
-        var result = commandProcessor.process(firstCmd)
-        var chosenDisplay = primary
-
-        if (!result.matched && matches.size > 1) {
-            for (alt in matches.drop(1)) {
-                val altClean = alt.trim()
-                if (altClean.isEmpty()) continue
-                val (altWake, altStripped) = commandProcessor.stripWakeWordPrefix(altClean)
-                val altCmd = if (altWake && altStripped.isNotEmpty()) altStripped else altClean
-                val altRes = commandProcessor.process(altCmd)
-                if (altRes.matched) {
-                    result = altRes
-                    chosenDisplay = altClean
-                    break
-                }
-            }
-        }
-
+        val (chosenDisplay, result) = commandProcessor.processCandidates(matches)
+        if (chosenDisplay.isEmpty()) return
         applyCommandResult(chosenDisplay, result)
     }
 
@@ -282,7 +265,7 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         AssistantStateBus.updateServiceState(
             running = true,
             listening = false,
-            status = "🔊 Говорю: $text"
+            status = "🔊 Нелли: $text"
         )
 
         if (!ttsReady || tts == null) {
@@ -319,7 +302,10 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts?.language = Locale("ru", "RU")
+            tts?.let { engine ->
+                engine.language = Locale("ru", "RU")
+                selectFemaleRussianVoice(engine)
+            }
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
                     isSpeaking = true
@@ -440,5 +426,34 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         const val ACTION_STOP_SERVICE = "com.example.project12.ACTION_STOP_SERVICE"
         const val EXTRA_COMMAND_TEXT = "extra_command_text"
         const val EXTRA_CANDIDATES_LIST = "extra_candidates_list"
+
+        fun selectFemaleRussianVoice(engine: TextToSpeech) {
+            try {
+                val voices = engine.voices ?: return
+                val ruVoices = voices.filter { v ->
+                    v.locale.language.equals("ru", ignoreCase = true)
+                }
+                if (ruVoices.isEmpty()) return
+
+                val preferredFemale = ruVoices.firstOrNull { v ->
+                    val n = v.name.lowercase(Locale.US)
+                    !v.isNetworkConnectionRequired &&
+                        (n.contains("female") || n.contains("-ruf") || n.contains("-dfc")) &&
+                        !n.contains("-rud") && !n.contains("-rjs")
+                } ?: ruVoices.firstOrNull { v ->
+                    val n = v.name.lowercase(Locale.US)
+                    (n.contains("female") || n.contains("-ruf") || n.contains("-dfc")) &&
+                        !n.contains("-rud") && !n.contains("-rjs")
+                } ?: ruVoices.firstOrNull { v ->
+                    val n = v.name.lowercase(Locale.US)
+                    !v.isNetworkConnectionRequired && !n.contains("male") && !n.contains("-rud") && !n.contains("-rjs")
+                }
+
+                if (preferredFemale != null) {
+                    engine.voice = preferredFemale
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 }
