@@ -94,14 +94,29 @@ class CommandProcessor(
             return "" to CommandResult(spokenResponse = null, matched = false)
         }
 
-        // Pass 1: Check ALL candidates locally (without cloud fallback) so candidate #2/#3 can rescue a misheard app or contact name!
-        for (candidate in cleanedList) {
+        // v5.0: проверяем ВСЕ гипотезы распознавания и выбираем не первую совпавшую,
+        // а ту, что точнее попадает в словарь команд. Это сильно уменьшает «недопонимания».
+        var bestRaw = ""
+        var bestResult: CommandResult? = null
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        cleanedList.forEachIndexed { index, candidate ->
             val (hadWake, stripped) = stripWakeWordPrefix(candidate)
             val effective = if (hadWake && stripped.isNotEmpty()) stripped else candidate
             val localRes = processInternal(effective, allowCloudFallback = false)
             if (localRes.matched) {
-                return candidate to localRes
+                val score = scoreCandidateAgainstCommands(effective) - index * 0.18
+                if (score > bestScore) {
+                    bestScore = score
+                    bestRaw = candidate
+                    bestResult = localRes
+                }
             }
+        }
+
+        val chosen = bestResult
+        if (chosen != null) {
+            return bestRaw to chosen
         }
 
         // Pass 2: None of the N-best candidates matched a phone command/app/contact -> answer primary via freeform AI / Wikipedia
@@ -109,6 +124,19 @@ class CommandProcessor(
         val (hadWake, stripped) = stripWakeWordPrefix(primary)
         val effective = if (hadWake && stripped.isNotEmpty()) stripped else primary
         return primary to processInternal(effective, allowCloudFallback = true)
+    }
+
+    /** Оценка того, насколько фраза похожа на известную команду (для выбора лучшей гипотезы ASR). */
+    private fun scoreCandidateAgainstCommands(effectiveRaw: String): Double {
+        val low = effectiveRaw.lowercase(ruLocale).replace('ё', 'е')
+        var score = 0.0
+        for (kw in COMMAND_KEYWORDS) {
+            if (kw.isNotEmpty() && low.contains(kw)) {
+                score += if (kw.length >= 6) 1.6 else 1.0
+            }
+        }
+        if (low.length in 5..70) score += 0.4
+        return score
     }
 
     fun process(rawInput: String): CommandResult {
@@ -184,6 +212,22 @@ class CommandProcessor(
             matched = true
         )
     }
+
+    private val COMMAND_KEYWORDS = listOf(
+        "открой", "включи", "запусти", "зайди", "выключи", "позвони", "набери", "напиши", "отправь",
+        "сообщение", "смс", "ватсап", "вотсап", "телеграм", "ютуб", "youtube", "инстаграм", "камера",
+        "фонарик", "фонарь", "громче", "тише", "громкость", "погода", "температура", "зонт", "будильник",
+        "таймер", "напомни", "секундомер", "маршрут", "2гис", "два гис", "навигатор", "карта", "координаты",
+        "где я", "адрес", "найди", "ближайш", "аптека", "заправка", "банкомат", "кафе", "такси",
+        "время", "дата", "число", "курс", "доллар", "евро", "тенге", "рубл", "переведи", "конверт",
+        "запомни", "заметка", "покупки", "список", "задача", "пароль", "буфер", "скопируй",
+        "музыка", "трек", "пауза", "продолжи", "видео", "фото", "сфотографируй", "диктофон", "загрузк",
+        "батаре", "заряд", "память", "интернет", "ip", "модель", "диагностика", "вибрац",
+        "новост", "погод", "перевод", "шутка", "анекдот", "факт", "совет", "игра", "загадк", "город",
+        "торгуй", "олимп", "olymp", "сделк", "сделку", "рынок", "анализ", "сигнал", "график",
+        "биткоин", "золото", "нефть", "фунт", "подтверждаю", "автоторговл", "журнал сделок",
+        "голос", "голосом", "милым", "спокойным", "обычным"
+    )
 
     private fun executeCore(commandInput: String, originalUserDisplay: String): CommandResult {
         val original = commandInput.trim()
@@ -282,6 +326,12 @@ class CommandProcessor(
         // 13. GPS Coordinates, Place Recognition, Shortest Paths & Full 2GIS Route Control
         handle2GisAndLocationCommands(lower, original, originalUserDisplay)?.let { return it }
 
+        // 13b. v5.0 — Голос Нелли (милый / обычный / спокойный)
+        handleVoiceStyleCommands(lower)?.let { return CommandResult(it) }
+
+        // 13c. v5.0 — OlympTrade: анализ 15-минутного рынка, автоторговля, сделки, журнал
+        handleTradingCommands(lower, original, originalUserDisplay)?.let { return it }
+
         // 14. Camera (Photo / Video), Voice Recorder, Downloads
         if (lower.contains("сделай фото") || lower.contains("сфотографируй") || lower.contains("сфоткай") ||
             lower.contains("открой камер") || lower == "камера" || lower == "селфи"
@@ -327,7 +377,9 @@ class CommandProcessor(
             lower.contains("чему ты научилась") || lower.contains("чему ты научился")
         ) {
             return CommandResult(
-                "Меня зовут Нелли! Я определяю ваши координаты и адрес, нахожу места и прокладываю кратчайшие маршруты в 2ГИС, понимаю какое приложение сейчас открыто на экране (например, могу продолжить маршрут в 2ГИС или отправить текст прямо в открытом чате), а также сама отправляю СМС и сообщения в WhatsApp и Telegram без нажатий руками!"
+                "Меня зовут Нелли! Я определяю ваши координаты и адрес, нахожу места и прокладываю кратчайшие маршруты в 2ГИС, понимаю какое приложение сейчас открыто на экране, сама отправляю СМС и сообщения в WhatsApp и Telegram, " +
+                    "а ещё анализирую 15-минутный рынок и умею открывать сделки в OlympTrade по команде «торгуй за меня»! " +
+                    "Голос у меня теперь милый женский — скажите «говори милым голосом» или «спокойным голосом»."
             )
         }
 
@@ -1461,6 +1513,341 @@ class CommandProcessor(
         } else {
             "Не удалось открыть камеру."
         }
+    }
+
+    // ================================================================ v5.0
+
+    private fun handleVoiceStyleCommands(lower: String): String? {
+        if (lower.contains("какой у тебя голос") || lower.contains("каким голосом ты говоришь") ||
+            lower.contains("настройки голоса") || lower.contains("про голос")
+        ) {
+            return VoicePersona.describeCurrent(null)
+        }
+        val sweetish = lower.contains("мил") || lower.contains("нежн") || lower.contains(" cute")
+        val calmish = lower.contains("спокойн") || lower.contains("низк") || lower.contains("серьезн") ||
+            lower.contains("серьёзн") || lower.contains("диктор")
+        val natural = lower.contains("обычн") || lower.contains("нормальн") || lower.contains("естественн")
+
+        if (!(lower.contains("голос") || lower.contains("говори"))) return null
+
+        return when {
+            sweetish -> {
+                VoicePersona.style = VoiceStyle.SWEET
+                "Хорошо! Теперь у меня милый женский голос — мягкий и чуть выше. Тебе нравится?"
+            }
+            calmish -> {
+                VoicePersona.style = VoiceStyle.CALM
+                "Перехожу на спокойный низкий голос."
+            }
+            natural -> {
+                VoicePersona.style = VoiceStyle.NATURAL
+                "Возвращаю обычный женский голос."
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * v5.0 — трейдинг в OlympTrade.
+     */
+    private fun handleTradingCommands(
+        lower: String,
+        original: String,
+        userDisplay: String
+    ): CommandResult? {
+        TradingSettings.init(context.applicationContext)
+
+        val looksLikeOlymp = lower.contains("олимп") || lower.contains("olymp") ||
+            lower.contains("olymptrade") || lower.contains("olymp trade")
+
+        // --- Открыть OlympTrade
+        if (looksLikeOlymp &&
+            (lower.contains("открой") || lower.contains("запусти") || lower.contains("включи") ||
+                lower == "олимп" || lower == "olymptrade" || lower == "олимп трейд" || lower == "олимптрейд")
+        ) {
+            return if (OlympTradeEngine.isInstalled(context)) {
+                val ok = OlympTradeEngine.openApp(context)
+                CommandResult(
+                    if (ok) "Открываю OlympTrade. Скажите «проанализируй рынок на 15 минут» — и я дам сигнал."
+                    else "Нашла OlympTrade, но открыть не получилось. Попробуйте вручную."
+                )
+            } else {
+                CommandResult(
+                    "OlympTrade на телефоне не установлен. Установите приложение из Play Маркета, " +
+                        "войдите в аккаунт — и я смогу им управлять."
+                )
+            }
+        }
+
+        // --- Анализ рынка
+        if (lower.contains("проанализируй рынок") || lower.contains("анализ рынка") ||
+            lower.contains("что по рынку") || lower.contains("дай сигнал") ||
+            lower.contains("куда пойдет") || lower.contains("куда пойдёт") ||
+            lower.contains("проанализируй график") || lower.contains("смотри рынок") ||
+            lower.contains("проанализируй на 15") || lower.contains("торговый сигнал") ||
+            lower == "анализ" || lower.contains("стоит ли входить")
+        ) {
+            val asset = MarketAssets.byId(TradingSettings.assetId)
+            AssistantStateBus.updateTradingStatus("Анализирую рынок…")
+            MarketAnalysisEngine.analyzeAsync(asset, TradingSettings.expiryMinutes) { signal, error ->
+                if (signal == null) {
+                    onAsyncReply(userDisplay, error ?: "Не удалось получить данные рынка.")
+                } else {
+                    val summary = signal.shortSummaryRu()
+                    AssistantStateBus.updateTradingStatus(summary, summary)
+                    onAsyncReply(userDisplay, MarketAnalysisEngine.buildSpeechRu(signal))
+                }
+            }
+            return CommandResult(
+                spokenResponse = "Смотрю ${TradingSettings.expiryMinutes}-минутный график по ${asset.titleRu}…",
+                asyncPending = true
+            )
+        }
+
+        // --- Включить автоторговлю
+        if ((lower.contains("торгуй") || lower.contains("автоторговл") || lower.contains("торгов") ||
+                lower.contains("зарабатывай")) &&
+            (lower.contains("сам") || lower.contains("за меня") || lower.contains("авто") ||
+                lower.contains("включи торгов") || lower.contains("начни торгов") ||
+                lower.contains("включи автоторговл") || lower.contains("давай торгов"))
+        ) {
+            if (lower.contains("выключ") || lower.contains("стоп") || lower.contains("хватит") ||
+                lower.contains("перестань") || lower.contains("останови")
+            ) {
+                TradingSettings.autoTrade = false
+                TradingCoordinator.stop(context)
+                return CommandResult("Автоторговля выключена. Больше не вхожу в сделки без твоей команды.")
+            }
+            TradingSettings.autoTrade = true
+            TradingCoordinator.start(context)
+            val asset = MarketAssets.byId(TradingSettings.assetId)
+            val conf = TradingSettings.minConfidence
+            val mode = if (TradingSettings.autoConfirm) {
+                "Вход без подтверждения — я сама нажму кнопку."
+            } else {
+                "Перед каждой сделкой спрошу «подтверждаю сделку»."
+            }
+            return CommandResult(
+                "Включаю автоторговлю: ${asset.titleRu}, ${TradingSettings.expiryMinutes} минут, " +
+                    "минимальная уверенность $conf процентов. $mode " +
+                    if (TradingSettings.demoOnly) "Сейчас включён демо-счёт — реальные деньги в безопасности." else
+                        "ВНИМАНИЕ: включён реальный счёт."
+            )
+        }
+
+        // --- Выключить автоторговлю / стоп
+        if (lower.contains("выключи торгов") || lower.contains("стоп торгов") ||
+            lower.contains("останови торгов") || lower.contains("хватит торговать") ||
+            lower.contains("перестань торговать") || lower.contains("выключи автоторговлю")
+        ) {
+            TradingSettings.autoTrade = false
+            TradingCoordinator.stop(context)
+            return CommandResult("Автоторговля выключена.")
+        }
+
+        // --- Явная команда «купи вверх / вниз»
+        val explicitDir: TradeDirection? = when {
+            Regex("(?:купи|зайди|открой|входи|ставь|сделай)\\s+(?:сделку\\s+)?(?:вверх|выше|наверх)", RegexOption.IGNORE_CASE)
+                .containsMatchIn(original) -> TradeDirection.UP
+            Regex("(?:купи|зайди|открой|входи|ставь|сделай)\\s+(?:сделку\\s+)?(?:вниз|ниже)", RegexOption.IGNORE_CASE)
+                .containsMatchIn(original) -> TradeDirection.DOWN
+            lower == "вверх" || lower == "сделка вверх" -> TradeDirection.UP
+            lower == "вниз" || lower == "сделка вниз" -> TradeDirection.DOWN
+            else -> null
+        }
+        if (explicitDir != null) {
+            val asset = MarketAssets.byId(TradingSettings.assetId)
+            AssistantStateBus.updateTradingStatus("Проверяю сигнал перед сделкой…")
+            MarketAnalysisEngine.analyzeAsync(asset, TradingSettings.expiryMinutes) { signal, error ->
+                if (signal == null) {
+                    onAsyncReply(userDisplay, error ?: "Нет данных рынка — сделку не открываю.")
+                    return@analyzeAsync
+                }
+                val summary = signal.shortSummaryRu()
+                AssistantStateBus.updateTradingStatus(summary, summary)
+
+                if (signal.direction == TradeDirection.NONE) {
+                    onAsyncReply(
+                        userDisplay,
+                        "Сейчас нет чёткого сигнала по ${asset.titleRu} — входить не советую. " +
+                            MarketAnalysisEngine.buildSpeechRu(signal, includeDisclaimer = false)
+                    )
+                    return@analyzeAsync
+                }
+                if (signal.direction != explicitDir) {
+                    onAsyncReply(
+                        userDisplay,
+                        "Вы просите ${if (explicitDir == TradeDirection.UP) "вверх" else "вниз"}, " +
+                            "а анализ показывает ${if (signal.direction == TradeDirection.UP) "вверх" else "вниз"}. " +
+                            OlympTradeEngine.requestConfirmation(signal)
+                    )
+                    return@analyzeAsync
+                }
+                if (TradingSettings.autoConfirm) {
+                    OlympTradeEngine.executeTrade(context, signal) { ok, message ->
+                        onAsyncReply(userDisplay, message)
+                        if (!ok) AssistantStateBus.updateTradingStatus(message)
+                    }
+                } else {
+                    onAsyncReply(userDisplay, OlympTradeEngine.requestConfirmation(signal))
+                }
+            }
+            return CommandResult("Проверяю рынок и OlympTrade…", asyncPending = true)
+        }
+
+        // --- Подтверждение сделки
+        if (lower.contains("подтверждаю") || lower.contains("открывай сделку") ||
+            lower.contains("давай сделку") || lower.contains("входи в сделку")
+        ) {
+            if (!OlympTradeEngine.hasFreshPendingSignal()) {
+                return CommandResult(
+                    "Нет сделки, ожидающей подтверждения. Скажите «проанализируй рынок» — " +
+                        "и я предложу вход."
+                )
+            }
+            val started = OlympTradeEngine.confirmPending(context) { ok, message ->
+                onAsyncReply(userDisplay, message)
+                if (!ok) AssistantStateBus.updateTradingStatus(message)
+            }
+            if (!started) {
+                return CommandResult("Подтверждение устарело. Скажите «проанализируй рынок» заново.")
+            }
+            return CommandResult("Подтверждено! Открываю сделку в OlympTrade…", asyncPending = true)
+        }
+
+        if (lower.contains("отмени сделку") || lower.contains("отмена сделки") ||
+            lower == "отмена" || lower.contains("не надо сделку")
+        ) {
+            if (OlympTradeEngine.hasFreshPendingSignal()) {
+                OlympTradeEngine.clearPendingSignal()
+                return CommandResult("Хорошо, сделку отменила. Ничего не открываю.")
+            }
+            return null
+        }
+
+        // --- Статус и журнал
+        if (lower.contains("статус торгов") || lower.contains("что по сделке") ||
+            lower.contains("какая сделка") || lower.contains("состояние торгов") ||
+            lower.contains("как торговля") || lower.contains("мои сделки")
+        ) {
+            if (lower.contains("журнал") || lower.contains("истори") || lower.contains("мои сделки")) {
+                return CommandResult(TradingSettings.journalText())
+            }
+            return CommandResult(
+                OlympTradeEngine.describeStatus(context) + " " + TradingSettings.journalText()
+            )
+        }
+        if (lower.contains("журнал сделок") || lower.contains("история сделок") ||
+            lower.contains("покажи сделки")
+        ) {
+            return CommandResult(TradingSettings.journalText())
+        }
+
+        // --- Отметка результата
+        if (lower.contains("сделка выиграла") || lower.contains("сделка в плюс") ||
+            lower.contains("закрылась в плюс") || lower.contains("профит")
+        ) {
+            TradingSettings.markLastOutcome("выигрыш")
+            return CommandResult("Записала: последняя сделка в плюс. Отличная работа!")
+        }
+        if (lower.contains("сделка проиграла") || lower.contains("сделка в минус") ||
+            lower.contains("закрылась в минус") || lower.contains("лосс")
+        ) {
+            TradingSettings.markLastOutcome("проигрыш")
+            return CommandResult(
+                "Записала: последняя сделка в минус. Не отыгрывайтесь сразу — сделайте паузу."
+            )
+        }
+
+        // --- Экран OlympTrade и кнопки
+        if ((lower.contains("что на экране олимп") || lower.contains("прочитай экран олимп") ||
+                lower.contains("какие кнопки в олимп") || lower.contains("экран олимп")) &&
+            lower.contains("олимп")
+        ) {
+            return CommandResult(OlympTradeEngine.readCurrentScreen(context))
+        }
+
+        // --- Актив
+        val assetMatch = Regex(
+            "^(?:выбери|переключи|торгуй|поставь)\\s+(?:актив\\s+|на\\s+)?(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (assetMatch != null) {
+            val rawAsset = assetMatch.groupValues[1].trim()
+            val asset = MarketAssets.resolve(rawAsset)
+            if (asset != null) {
+                TradingSettings.assetId = asset.id
+                return CommandResult(
+                    "Актив переключён на ${asset.titleRu}. Скажите «проанализируй рынок», чтобы получить сигнал."
+                )
+            }
+        }
+
+        // --- Демо / реальный счёт
+        if (lower.contains("демо счет") || lower.contains("демо счёт") || lower.contains("демо режим") ||
+            lower.contains("торгуй на демо")
+        ) {
+            TradingSettings.demoOnly = true
+            return CommandResult(
+                "Включила демо-режим. Теперь я не буду входить в сделки, если в OlympTrade открыт реальный счёт."
+            )
+        }
+        if (lower.contains("реальный счет") || lower.contains("реальный счёт") ||
+            lower.contains("торгуй на реальные") || lower.contains("настоящие деньги")
+        ) {
+            TradingSettings.demoOnly = false
+            return CommandResult(
+                "Выключила демо-режим — теперь сделки будут на реальном счёте, если он открыт в OlympTrade. " +
+                    "Пожалуйста, рискуйте только теми деньгами, которые готовы потерять."
+            )
+        }
+
+        // --- Ставка
+        val stakeMatch = Regex(
+            "(?:ставка|сумма сделки|риск)\\s+(\\d+(?:[.,]\\d+)?)",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (stakeMatch != null) {
+            val value = stakeMatch.groupValues[1].replace(',', '.').toDoubleOrNull()
+            if (value != null && value > 0) {
+                TradingSettings.stake = value
+                return CommandResult(
+                    "Запомнила ставку ${value.toInt()} (в валюте счёта). Нажимать сумму в приложении нужно вручную."
+                )
+            }
+        }
+
+        // --- Минимальная уверенность
+        val confMatch = Regex(
+            "(?:уверенность|порог)\\s+(\\d{2})",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (confMatch != null) {
+            val value = confMatch.groupValues[1].toIntOrNull()
+            if (value != null) {
+                TradingSettings.minConfidence = value
+                return CommandResult(
+                    "Минимальная уверенность для входа теперь ${TradingSettings.minConfidence} процентов."
+                )
+            }
+        }
+
+        // --- Экспирация
+        val expiryMatch = Regex(
+            "(?:экспирация|время сделки|таймфрейм)\\s+(\\d{1,2})\\s*(?:мин|минут|м)",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (expiryMatch != null) {
+            val value = expiryMatch.groupValues[1].toIntOrNull()
+            if (value != null && value in 1..60) {
+                TradingSettings.expiryMinutes = value
+                return CommandResult(
+                    "Время сделки и анализа теперь $value минут. Скажите «проанализируй рынок»."
+                )
+            }
+        }
+
+        return null
     }
 
     private fun handleSettingsCommand(lower: String): String? {

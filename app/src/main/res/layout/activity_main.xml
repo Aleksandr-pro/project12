@@ -244,6 +244,279 @@
                 android:textSize="13.5sp" />
         </LinearLayout>
 
+        <!-- Voice Persona Card (v5.0) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Голос Нелли"
+                android:textColor="@color/textPrimary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvVoiceStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Сейчас выбран милый женский голос."
+                android:textColor="@color/textSecondary"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnVoiceSweet"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#DB2777"
+                    android:text="Милая"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btnVoiceNatural"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#4F46E5"
+                    android:text="Обычная"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btnVoiceCalm"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#0D9488"
+                    android:text="Спокойная"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnPickVoice"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#374151"
+                    android:text="🎧 Выбрать голос"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btnVoiceSample"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#111827"
+                    android:text="▶ Прослушать"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Trading Card (v5.0) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="📈 Трейдинг в OlympTrade (15 минут)"
+                android:textColor="@color/textPrimary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvTradingStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Выберите актив и нажмите «Анализ сейчас». Нелли посчитает индикаторы и предложит вход."
+                android:textColor="@color/textSecondary"
+                android:textSize="13sp" />
+
+            <Spinner
+                android:id="@+id/spinnerAsset"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="6dp" />
+
+            <TextView
+                android:id="@+id/tvSignal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/textPrimary"
+                android:textSize="13.5sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnAnalyzeNow"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#0D9488"
+                    android:text="📊 Анализ сейчас"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btnOpenOlymp"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#1565C0"
+                    android:text="Открыть OlympTrade"
+                    android:textAllCaps="false"
+                    android:textColor="@android:color/white"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <SwitchCompat
+                android:id="@+id/switchAutoTrade"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Автоторговля (проверять рынок каждые 30 секунд)"
+                android:textColor="@color/textPrimary"
+                android:textSize="13.5sp" />
+
+            <SwitchCompat
+                android:id="@+id/switchAutoConfirm"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Входить без голосового подтверждения"
+                android:textColor="@color/textPrimary"
+                android:textSize="13.5sp" />
+
+            <SwitchCompat
+                android:id="@+id/switchDemoOnly"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Только демо-счёт (безопасно)"
+                android:textColor="@color/textPrimary"
+                android:textSize="13.5sp" />
+
+            <TextView
+                android:id="@+id/tvJournal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:lineSpacingExtra="2dp"
+                android:text="Журнал пуст — сделок ещё не было."
+                android:textColor="@color/textSecondary"
+                android:textSize="12.5sp" />
+
+            <Button
+                android:id="@+id/btnClearJournal"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="6dp"
+                android:backgroundTint="#9CA3AF"
+                android:text="Очистить журнал сделок"
+                android:textAllCaps="false"
+                android:textColor="@android:color/white"
+                android:textSize="12.5sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="⚠️ Технический анализ не гарантирует прибыль. Торгуйте только теми деньгами, которые готовы потерять."
+                android:textColor="@color/statusStopped"
+                android:textSize="11.5sp" />
+        </LinearLayout>
+
+        <!-- Permissions Card (v5.0) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Все разрешения Нелли"
+                android:textColor="@color/textPrimary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Микрофон, контакты, звонки, СМС, геолокация, уведомления, управление экраном и работа в фоне."
+                android:textColor="@color/textSecondary"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnGrantAllPermissions"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="#7C3AED"
+                android:text="🔐 Разрешить всё"
+                android:textAllCaps="false"
+                android:textColor="@android:color/white"
+                android:textSize="13.5sp" />
+
+            <Button
+                android:id="@+id/btnBatteryOptimization"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="6dp"
+                android:backgroundTint="#374151"
+                android:text="🔋 Не выключать Нелли в фоне"
+                android:textAllCaps="false"
+                android:textColor="@android:color/white"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+
         <!-- Full 120+ Commands & Natural Speech Guide Card -->
         <LinearLayout
             android:layout_width="match_parent"

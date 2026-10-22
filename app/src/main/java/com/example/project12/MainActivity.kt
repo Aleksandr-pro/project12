@@ -2,10 +2,12 @@ package com.example.project12
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -15,9 +17,12 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -45,6 +50,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnClearHistory: Button
     private lateinit var etFilterCommands: EditText
     private lateinit var tvCommandsGuide: TextView
+
+    // v5.0 — голос
+    private lateinit var tvVoiceStatus: TextView
+    private lateinit var btnVoiceSweet: Button
+    private lateinit var btnVoiceNatural: Button
+    private lateinit var btnVoiceCalm: Button
+    private lateinit var btnPickVoice: Button
+    private lateinit var btnVoiceSample: Button
+
+    // v5.0 — трейдинг
+    private lateinit var tvTradingStatus: TextView
+    private lateinit var spinnerAsset: Spinner
+    private lateinit var tvSignal: TextView
+    private lateinit var btnAnalyzeNow: Button
+    private lateinit var btnOpenOlymp: Button
+    private lateinit var switchAutoTrade: SwitchCompat
+    private lateinit var switchAutoConfirm: SwitchCompat
+    private lateinit var switchDemoOnly: SwitchCompat
+    private lateinit var tvJournal: TextView
+    private lateinit var btnClearJournal: Button
+
+    // v5.0 — разрешения
+    private lateinit var btnGrantAllPermissions: Button
+    private lateinit var btnBatteryOptimization: Button
+    private var updatingTradingUi = false
+    private var lastJournalRefreshMs = 0L
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var localTts: TextToSpeech? = null
@@ -79,6 +110,30 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         btnClearHistory = findViewById(R.id.btnClearHistory)
         etFilterCommands = findViewById(R.id.etFilterCommands)
         tvCommandsGuide = findViewById(R.id.tvCommandsGuide)
+
+        tvVoiceStatus = findViewById(R.id.tvVoiceStatus)
+        btnVoiceSweet = findViewById(R.id.btnVoiceSweet)
+        btnVoiceNatural = findViewById(R.id.btnVoiceNatural)
+        btnVoiceCalm = findViewById(R.id.btnVoiceCalm)
+        btnPickVoice = findViewById(R.id.btnPickVoice)
+        btnVoiceSample = findViewById(R.id.btnVoiceSample)
+
+        tvTradingStatus = findViewById(R.id.tvTradingStatus)
+        spinnerAsset = findViewById(R.id.spinnerAsset)
+        tvSignal = findViewById(R.id.tvSignal)
+        btnAnalyzeNow = findViewById(R.id.btnAnalyzeNow)
+        btnOpenOlymp = findViewById(R.id.btnOpenOlymp)
+        switchAutoTrade = findViewById(R.id.switchAutoTrade)
+        switchAutoConfirm = findViewById(R.id.switchAutoConfirm)
+        switchDemoOnly = findViewById(R.id.switchDemoOnly)
+        tvJournal = findViewById(R.id.tvJournal)
+        btnClearJournal = findViewById(R.id.btnClearJournal)
+
+        btnGrantAllPermissions = findViewById(R.id.btnGrantAllPermissions)
+        btnBatteryOptimization = findViewById(R.id.btnBatteryOptimization)
+
+        VoicePersona.init(this)
+        TradingSettings.init(this)
 
         localTts = TextToSpeech(this, this)
         localCommandProcessor = CommandProcessor(this) { userText, asyncReply ->
@@ -144,6 +199,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         updateScreenControlStatus()
 
+        setupVoiceCard()
+        setupTradingCard()
+        setupPermissionsCard()
+
         fullGuideSections = buildGuideSections()
         tvCommandsGuide.text = fullGuideSections.joinToString("\n\n")
 
@@ -156,6 +215,256 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         })
 
         renderState()
+    }
+
+    // ============================================================== v5.0 UI
+
+    private fun setupVoiceCard() {
+        updateVoiceUi()
+        btnVoiceSweet.setOnClickListener { applyVoiceStyle(VoiceStyle.SWEET) }
+        btnVoiceNatural.setOnClickListener { applyVoiceStyle(VoiceStyle.NATURAL) }
+        btnVoiceCalm.setOnClickListener { applyVoiceStyle(VoiceStyle.CALM) }
+        btnPickVoice.setOnClickListener { showVoicePicker() }
+        btnVoiceSample.setOnClickListener {
+            speakVoiceSample(
+                "Привет! Меня зовут Нелли. Я помогу с маршрутом, сообщением и рынком. " +
+                    "Теперь я говорю ${VoicePersona.style.labelRu.lowercase(Locale("ru", "RU"))} голосом."
+            )
+        }
+    }
+
+    private fun applyVoiceStyle(style: VoiceStyle) {
+        VoicePersona.style = style
+        localTts?.let {
+            VoicePersona.selectVoice(it)
+            VoicePersona.apply(it)
+        }
+        updateVoiceUi()
+        speakVoiceSample(
+            "Хорошо! Теперь у меня ${style.labelRu.lowercase(Locale("ru", "RU"))} голос. ${style.description}."
+        )
+    }
+
+    private fun updateVoiceUi() {
+        val style = VoicePersona.style
+        val selectedName = try {
+            localTts?.voice?.name
+        } catch (_: Exception) {
+            null
+        } ?: "авто-выбор"
+        tvVoiceStatus.text = "Характер: «${style.labelRu}» • тон ${"%.2f".format(Locale.US, style.pitch)} • " +
+            "скорость ${"%.2f".format(Locale.US, style.rate)} • голос: $selectedName"
+    }
+
+    private fun showVoicePicker() {
+        val engine = localTts
+        if (engine == null || !localTtsReady) {
+            Toast.makeText(this, "Синтезатор речи ещё загружается — попробуйте через секунду.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val voices = VoicePersona.russianVoices(engine)
+        if (voices.isEmpty()) {
+            Toast.makeText(
+                this,
+                "На телефоне не найдено русских голосов. Установите «Речевые сервисы Google» и скачайте русский язык.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val labels = voices.map { v ->
+            val kind = if (v.isNetworkConnectionRequired) "сеть" else "офлайн"
+            "${v.name}   ($kind)"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Выберите женский голос")
+            .setItems(labels) { _, which ->
+                val voice = voices[which]
+                VoicePersona.preferredVoiceName = voice.name
+                try {
+                    engine.voice = voice
+                } catch (_: Exception) {
+                }
+                VoicePersona.apply(engine)
+                updateVoiceUi()
+                speakVoiceSample("Так звучит голос ${voice.name}.")
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun speakVoiceSample(text: String) {
+        val spoken = VoicePersona.prepareTextForSpeech(text)
+        if (AssistantStateBus.isServiceRunning) {
+            startAssistantService(
+                action = VoiceAssistantService.ACTION_SPEAK_TEXT,
+                extraText = spoken
+            )
+            return
+        }
+        if (localTtsReady) {
+            localTts?.let { VoicePersona.apply(it) }
+            localTts?.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, "voice_sample")
+        } else {
+            Toast.makeText(this, "Синтезатор ещё не готов.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---------------------------------------------------------- трейдинг
+
+    private fun setupTradingCard() {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            MarketAssets.ALL.map { it.titleRu }
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinnerAsset.adapter = adapter
+        val index = MarketAssets.ALL.indexOfFirst { it.id == TradingSettings.assetId }.coerceAtLeast(0)
+        spinnerAsset.setSelection(index, false)
+        spinnerAsset.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                val asset = MarketAssets.ALL.getOrNull(position) ?: return
+                if (TradingSettings.assetId != asset.id) {
+                    TradingSettings.assetId = asset.id
+                    AssistantStateBus.updateTradingStatus("Актив: ${asset.titleRu}")
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        btnAnalyzeNow.setOnClickListener { runCommandFromButton("проанализируй рынок") }
+        btnOpenOlymp.setOnClickListener { runCommandFromButton("открой олимп трейд") }
+
+        switchAutoTrade.isChecked = TradingSettings.autoTrade
+        switchAutoConfirm.isChecked = TradingSettings.autoConfirm
+        switchDemoOnly.isChecked = TradingSettings.demoOnly
+
+        switchAutoTrade.setOnCheckedChangeListener { _, checked ->
+            if (updatingTradingUi) return@setOnCheckedChangeListener
+            TradingSettings.autoTrade = checked
+            if (checked) {
+                TradingCoordinator.start(this)
+            } else {
+                TradingCoordinator.stop(this)
+            }
+        }
+        switchAutoConfirm.setOnCheckedChangeListener { _, checked ->
+            if (updatingTradingUi) return@setOnCheckedChangeListener
+            TradingSettings.autoConfirm = checked
+            Toast.makeText(
+                this,
+                if (checked) "Нелли будет входить в сделку без дополнительного подтверждения."
+                else "Перед каждой сделкой Нелли спросит «подтверждаю сделку».",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        switchDemoOnly.setOnCheckedChangeListener { _, checked ->
+            if (updatingTradingUi) return@setOnCheckedChangeListener
+            TradingSettings.demoOnly = checked
+            if (!checked) {
+                Toast.makeText(
+                    this,
+                    "Демо-режим выключен: сделки пойдут на реальном счёте, если он открыт в OlympTrade.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
+        btnClearJournal.setOnClickListener {
+            TradingSettings.clearJournal()
+            refreshJournalUi(force = true)
+            Toast.makeText(this, "Журнал сделок очищен.", Toast.LENGTH_SHORT).show()
+        }
+
+        refreshJournalUi()
+        updateTradingUi()
+    }
+
+    private fun updateTradingUi() {
+        val status = AssistantStateBus.tradingStatusText.ifBlank {
+            "Актив: ${MarketAssets.byId(TradingSettings.assetId).titleRu}. Нажмите «Анализ сейчас»."
+        }
+        tvTradingStatus.text = status
+        val signal = AssistantStateBus.lastSignalText
+        tvSignal.text = signal
+        tvSignal.visibility = if (signal.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
+
+        updatingTradingUi = true
+        switchAutoTrade.isChecked = TradingSettings.autoTrade
+        switchAutoConfirm.isChecked = TradingSettings.autoConfirm
+        switchDemoOnly.isChecked = TradingSettings.demoOnly
+        updatingTradingUi = false
+    }
+
+    private fun refreshJournalUi(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastJournalRefreshMs < 2500L) return
+        lastJournalRefreshMs = now
+        tvJournal.text = TradingSettings.journalText()
+    }
+
+    private fun runCommandFromButton(command: String) {
+        if (AssistantStateBus.isServiceRunning) {
+            startAssistantService(
+                action = VoiceAssistantService.ACTION_EXECUTE_TEXT,
+                extraText = command
+            )
+        } else {
+            executeLocalCandidates(listOf(command))
+        }
+    }
+
+    // -------------------------------------------------------- разрешения
+
+    private fun setupPermissionsCard() {
+        btnGrantAllPermissions.setOnClickListener { requestAllPermissions() }
+        btnBatteryOptimization.setOnClickListener {
+            try {
+                val intent = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            } catch (_: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Откройте настройки батареи вручную.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun requestAllPermissions() {
+        val perms = mutableListOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val missing = perms.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            Toast.makeText(
+                this,
+                "Все разрешения выданы! Осталось включить «Управление экраном» в спецвозможностях.",
+                Toast.LENGTH_LONG
+            ).show()
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (_: Exception) {
+            }
+            return
+        }
+        ActivityCompat.requestPermissions(this, missing.toTypedArray(), REQ_PERMISSIONS_ALL)
     }
 
     private fun filterCommandsGuide(rawQuery: String) {
@@ -206,7 +515,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun updateScreenControlStatus() {
         val enabled = NellyAccessibilityService.isEnabled(this)
         if (enabled) {
-            tvScreenControlStatus.text = "✓ АКТИВНО: Нелли видит открытое приложение, сама жмёт «В путь / Продолжить маршрут» в 2ГИС и сама отправляет сообщения в WhatsApp и Telegram!"
+            tvScreenControlStatus.text = "✓ АКТИВНО: Нелли видит открытое приложение, жмёт «В путь» в 2ГИС, отправляет сообщения в WhatsApp/Telegram и управляет кнопками «Вверх/Вниз» в OlympTrade!"
             tvScreenControlStatus.setTextColor(ContextCompat.getColor(this, R.color.statusRunning))
             btnEnableScreenControl.text = "Настройки управления экраном (включено ✓)"
         } else {
@@ -245,15 +554,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (status == TextToSpeech.SUCCESS) {
             localTts?.let { engine ->
                 engine.language = Locale("ru", "RU")
-                VoiceAssistantService.selectFemaleRussianVoice(engine)
+                VoicePersona.selectVoice(engine)
+                VoicePersona.apply(engine)
             }
             localTtsReady = true
+            updateVoiceUi()
         }
     }
 
     private fun speakLocally(text: String) {
         if (localTtsReady && !AssistantStateBus.isServiceRunning) {
-            localTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "local_utt")
+            val spoken = VoicePersona.prepareTextForSpeech(text)
+            localTts?.let { VoicePersona.apply(it) }
+            localTts?.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, "local_utt")
         }
     }
 
@@ -419,6 +732,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             updateModeHint(AssistantStateBus.directMode)
         }
 
+        refreshJournalUi()
+        updateTradingUi()
+
         val entries = AssistantStateBus.history
         if (entries.isEmpty()) {
             tvHistory.text = "Пока нет выполненных команд."
@@ -489,9 +805,42 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 tvStatus.text = getString(R.string.error_permissions)
             }
         }
+        if (requestCode == REQ_PERMISSIONS_ALL) {
+            val denied = grantResults.count { it != PackageManager.PERMISSION_GRANTED }
+            if (denied == 0) {
+                Toast.makeText(
+                    this,
+                    "Все разрешения выданы! Теперь включите «Управление экраном».",
+                    Toast.LENGTH_LONG
+                ).show()
+                try {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } catch (_: Exception) {
+                }
+            } else {
+                Toast.makeText(
+                    this,
+                    "Выданы не все разрешения ($denied отклонено). Их можно включить в настройках приложения.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     private fun buildGuideSections(): List<String> = listOf(
+        """
+📈 ТРЕЙДИНГ В OLYMPTRADE И МИЛЫЙ ГОЛОС (v5.0)
+• Открыть: «Открой Олимп Трейд», «Запусти OlympTrade»
+• Анализ 15-минутного рынка: «Проанализируй рынок», «Что по рынку», «Дай сигнал», «Стоит ли входить»
+• Вход в сделку: «Купи вверх», «Купи вниз», «Зайди в сделку вверх», затем «Подтверждаю сделку»
+• Автоторговля: «Торгуй за меня», «Включи автоторговлю» → Нелли проверяет рынок каждые 30 секунд
+• Остановить: «Выключи автоторговлю», «Стоп торговля»
+• Статус и журнал: «Статус торговли», «Журнал сделок», «Сделка выиграла», «Сделка проиграла»
+• Актив: «Выбери актив золото», «Торгуй биткоин», «Переключи на евро доллар»
+• Счёт: «Включи демо режим», «Торгуй на реальные деньги»
+• Ставка и порог: «Ставка 50», «Уверенность 75», «Экспирация 15 минут»
+• Голос: «Говори милым голосом», «Обычным голосом», «Спокойным голосом», «Какой у тебя голос»
+        """.trimIndent(),
         """
 🗺 УПРАВЛЕНИЕ 2ГИС, КООРДИНАТЫ, КРАТЧАЙШИЕ ПУТИ И РАБОТА В ОТКРЫТЫХ ПРИЛОЖЕНИЯХ (v4.0)
 • Кратчайшие маршруты в 2ГИС: «Проложи маршрут в 2ГИС до аэропорта», «Кратчайший путь до Керуен Сити», «Пеший маршрут до парка», «Маршрут на автобусе до вокзала»
@@ -563,5 +912,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     companion object {
         private const val REQ_PERMISSIONS = 1001
         private const val REQ_SPEECH_ONCE = 1002
+        private const val REQ_PERMISSIONS_ALL = 1003
     }
 }
