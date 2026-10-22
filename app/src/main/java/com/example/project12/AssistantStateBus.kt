@@ -1,8 +1,10 @@
 package com.example.project12
 
+import android.app.Activity
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -39,9 +41,27 @@ object AssistantStateBus {
         private set
 
     @Volatile
+    var micLevelPercent: Int = 0
+        private set
+
+    @Volatile
+    var diagnosticInfo: String = ""
+        private set
+
+    @Volatile
     var directMode: Boolean = true
         private set
 
+    @Volatile
+    private var activeActivityRef: WeakReference<Activity>? = null
+
+    fun setActiveActivity(activity: Activity?) {
+        activeActivityRef = if (activity != null) WeakReference(activity) else null
+    }
+
+    fun getActiveActivity(): Activity? = activeActivityRef?.get()
+
+    private var lastRmsNotifyMs: Long = 0L
     private val historyList = CopyOnWriteArrayList<DialogueEntry>()
 
     val history: List<DialogueEntry>
@@ -62,19 +82,44 @@ object AssistantStateBus {
         notifyListeners()
     }
 
-    fun updateServiceState(running: Boolean, listening: Boolean, status: String) {
+    fun updateServiceState(
+        running: Boolean,
+        listening: Boolean,
+        status: String,
+        diagnostic: String? = null
+    ) {
         isServiceRunning = running
         isListeningNow = listening
         statusText = status
+        if (diagnostic != null) {
+            diagnosticInfo = diagnostic
+        }
         if (!listening) {
             partialSpeech = ""
+            micLevelPercent = 0
         }
+        notifyListeners()
+    }
+
+    fun updateDiagnostic(diagnostic: String) {
+        diagnosticInfo = diagnostic
         notifyListeners()
     }
 
     fun updatePartialSpeech(partial: String) {
         partialSpeech = partial
         notifyListeners()
+    }
+
+    fun updateMicRms(rmsDb: Float) {
+        // Android SpeechRecognizer rmsDb typically ranges from -2f to +12f
+        val normalized = (((rmsDb + 2f) / 12f) * 100f).toInt().coerceIn(5, 100)
+        micLevelPercent = normalized
+        val now = System.currentTimeMillis()
+        if (now - lastRmsNotifyMs >= 90L) {
+            lastRmsNotifyMs = now
+            notifyListeners()
+        }
     }
 
     fun addDialogue(userText: String, assistantText: String) {
@@ -84,6 +129,7 @@ object AssistantStateBus {
             historyList.removeAt(historyList.size - 1)
         }
         partialSpeech = ""
+        micLevelPercent = 0
         notifyListeners()
     }
 

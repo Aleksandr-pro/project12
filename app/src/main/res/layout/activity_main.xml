@@ -28,38 +28,56 @@
                 android:textSize="17sp"
                 android:textStyle="bold" />
 
+            <ProgressBar
+                android:id="@+id/pbMicLevel"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="8dp"
+                android:layout_marginTop="8dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="@color/colorAccent" />
+
             <TextView
                 android:id="@+id/tvPartial"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="Нажмите запуск или кнопку микрофона ниже"
-                android:textColor="@color/textSecondary"
-                android:textSize="14sp"
-                android:textStyle="italic" />
+                android:text="Нажмите зелёную кнопку 🎤 для разовой команды или ▶ для постоянного режима"
+                android:textColor="@color/textPrimary"
+                android:textSize="14sp" />
 
-            <Button
-                android:id="@+id/btnToggle"
+            <TextView
+                android:id="@+id/tvDiagnostic"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:backgroundTint="@color/colorPrimary"
-                android:paddingTop="12dp"
-                android:paddingBottom="12dp"
-                android:text="@string/btn_start"
-                android:textAllCaps="false"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp" />
+                android:layout_marginTop="4dp"
+                android:textColor="@color/textSecondary"
+                android:textSize="12.5sp" />
 
             <Button
                 android:id="@+id/btnSpeakOnce"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="14dp"
                 android:backgroundTint="@color/colorAccent"
-                android:paddingTop="11dp"
-                android:paddingBottom="11dp"
-                android:text="@string/btn_speak_once"
+                android:paddingTop="13dp"
+                android:paddingBottom="13dp"
+                android:text="🎤 Нажать и сказать команду"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnToggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="@color/colorPrimary"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:text="@string/btn_start"
                 android:textAllCaps="false"
                 android:textColor="#FFFFFF"
                 android:textSize="15sp" />
@@ -96,7 +114,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Быстрая проверка команды текстом"
+                android:text="Ввод команды текстом"
                 android:textColor="@color/textPrimary"
                 android:textSize="15sp"
                 android:textStyle="bold" />
@@ -113,7 +131,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="Например: сколько будет 25 * 14"
+                    android:hint="Например: погода в Актобе"
                     android:imeOptions="actionSend"
                     android:inputType="text"
                     android:maxLines="1"
