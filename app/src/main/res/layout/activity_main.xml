@@ -419,7 +419,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Автоторговля (проверять рынок каждые 30 секунд)"
+                android:text="Автоторговля (проверять рынок каждые 30 секунд, пока Нелли запущена)"
                 android:textColor="@color/textPrimary"
                 android:textSize="13.5sp" />
 

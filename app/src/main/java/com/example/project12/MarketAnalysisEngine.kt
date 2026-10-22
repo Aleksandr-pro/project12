@@ -592,14 +592,24 @@ object MarketAnalysisEngine {
 
         // В самом конце 15-минутной свечи сигнал часто «перерисовывается» — слегка снижаем уверенность
         val nowMs = System.currentTimeMillis()
-        val lastCandleCloseMs = (work.last().timeSec + tfSec) * 1000L
-        val secondsToNext = ((lastCandleCloseMs - nowMs) / 1000L).coerceIn(0L, tfSec)
+        val tfMs = timeframeMinutes * 60_000L
+        val nextBoundaryMs = ((nowMs / tfMs) + 1) * tfMs
+        val secondsToNext = ((nextBoundaryMs - nowMs) / 1000L).coerceIn(0L, tfSec)
         if (secondsToNext in 1..45) {
             confidence *= 0.9
             warnings.add("Свеча закрывается менее чем через минуту — дождитесь нового бара")
         }
 
+        // Защита от устаревших данных (рынок закрыт / нет интернета / выходные)
+        val nowSecForFreshness = nowMs / 1000L
+        val dataAgeSec = nowSecForFreshness - work.last().timeSec
+        val staleData = dataAgeSec > tfSec * 3
+        if (staleData) {
+            warnings.add("Последняя свеча старше ${dataAgeSec / 60} мин — возможно, рынок закрыт")
+        }
+
         val direction = when {
+            staleData -> TradeDirection.NONE
             bull > bear && (bull - bear) >= 12.0 && confidence >= 55.0 -> TradeDirection.UP
             bear > bull && (bear - bull) >= 12.0 && confidence >= 55.0 -> TradeDirection.DOWN
             else -> TradeDirection.NONE
@@ -785,7 +795,9 @@ object MarketAnalysisEngine {
     }
 
     fun candleCloseTimeText(signal: MarketSignal): String {
-        val closeMs = (signal.candleOpenTimeSec + signal.timeframeMinutes * 60L) * 1000L
-        return SimpleDateFormat("HH:mm", Locale("ru", "RU")).format(Date(closeMs))
+        val tfMs = signal.timeframeMinutes * 60_000L
+        val nowMs = System.currentTimeMillis()
+        val nextBoundaryMs = ((nowMs / tfMs) + 1) * tfMs
+        return SimpleDateFormat("HH:mm", Locale("ru", "RU")).format(Date(nextBoundaryMs))
     }
 }
