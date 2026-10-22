@@ -37,6 +37,13 @@ jobs:
         run: |
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
+      - name: Check Maven Central access
+        run: |
+          echo "Testing Maven Central..."
+          curl -sI https://repo1.maven.org/maven2/ 2>&1 | head -5 || echo "Maven Central blocked"
+          echo "Testing Google Maven..."
+          curl -sI https://maven.google.com/ 2>&1 | head -5 || echo "Google Maven blocked"
+
       - name: Create local.properties
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
@@ -45,7 +52,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace --info
+        run: gradle assembleDebug --stacktrace --info 2>&1 | tee build-output.log
+
+      - name: Save build log on failure
+        if: failure()
+        run: |
+          echo "Build failed. Last 100 lines of output:"
+          tail -100 build-output.log
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
