@@ -2,8 +2,13 @@ name: Build APK
 
 on:
   push:
-    branches: [arena/2dbae2fd-project12, main, arena/18f6cfa1-project12]
+    branches: [main, arena/2dbae2fd-project12, arena/18f6cfa1-project12]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -31,18 +36,11 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
       - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
+        run: yes | sdkmanager --licenses > /dev/null
 
       - name: Install Android SDK packages
         run: |
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: Check Maven Central access
-        run: |
-          echo "Testing Maven Central..."
-          curl -sI https://repo1.maven.org/maven2/ 2>&1 | head -5 || echo "Maven Central blocked"
-          echo "Testing Google Maven..."
-          curl -sI https://maven.google.com/ 2>&1 | head -5 || echo "Google Maven blocked"
 
       - name: Create local.properties
         run: |
@@ -50,19 +48,41 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-disabled: true
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace --info 2>&1 | tee build-output.log
-
-      - name: Save build log on failure
-        if: failure()
+        shell: bash
         run: |
-          echo "Build failed. Last 100 lines of output:"
-          tail -100 build-output.log
+          set -o pipefail
+          gradle --version
+          if ! gradle assembleDebug --stacktrace 2>&1 | tee build-output.log; then
+            ERR_MSG=$(grep -E "(FAILURE:|What went wrong:|^\* | > |e: file:|error: |Exception)" build-output.log | head -n 25 | tr '\n' ' ' | cut -c1-900)
+            echo "::error title=Gradle Build Error::${ERR_MSG}"
+            tail -n 120 build-output.log
+            exit 1
+          fi
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 7
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish APK to GitHub Release
+        if: success() && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v1.0 >/dev/null 2>&1; then
+            gh release upload v1.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          else
+            gh release create v1.0 app/build/outputs/apk/debug/app-debug.apk \
+              --title "Помощник AI v1.0 (Debug APK)" \
+              --notes "Готовый установочный файл app-debug.apk для Android 7.0+."
+          fi

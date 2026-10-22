@@ -5,114 +5,149 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.AudioManager
-import android.media.MediaRecorder
+import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import java.util.*
-import kotlin.math.sqrt
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
 
-    private lateinit var notificationManager: NotificationManagerCompat
-    private lateinit var tts: TextToSpeech
-    private lateinit var speechRecognizer: SpeechRecognizer
-    private lateinit var wakeMonitor: WakeWordMonitor
+    private var tts: TextToSpeech? = null
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var wakeMonitor: WakeWordMonitor? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var isListening = false
+    private var isDestroyed = false
 
     private val CHANNEL_ID = "voice_assistant_channel"
     private val NOTIFICATION_ID = 1001
 
     override fun onCreate() {
         super.onCreate()
-        notificationManager = NotificationManagerCompat.getInstance(this)
         createNotificationChannel()
 
         tts = TextToSpeech(this, this)
 
         if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            speechRecognizer.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsDb: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onError(error: Int) {
-                    isListening = false
-                    speak("Произошла ошибка распознавания. Продолжаю слушать.")
-                    startWakeMonitoring()
-                }
-                override fun onResults(results: Bundle?) {
-                    isListening = false
-                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val text = matches?.firstOrNull() ?: ""
-                    handleCommand(text)
-                    startWakeMonitoring()
-                }
-                override fun onPartialResults(results: Bundle?) {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)?.apply {
+                setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {}
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsDb: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+                    override fun onError(error: Int) {
+                        isListening = false
+                        if (!isDestroyed) {
+                            startWakeMonitoring()
+                        }
+                    }
+                    override fun onResults(results: Bundle?) {
+                        isListening = false
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val text = matches?.firstOrNull() ?: ""
+                        if (text.isNotBlank()) {
+                            handleCommand(text)
+                        }
+                        if (!isDestroyed) {
+                            mainHandler.postDelayed({
+                                if (!isDestroyed && !isListening) {
+                                    startWakeMonitoring()
+                                }
+                            }, 1500)
+                        }
+                    }
+                    override fun onPartialResults(results: Bundle?) {}
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+            }
         } else {
             Toast.makeText(this, R.string.error_no_recognizer, Toast.LENGTH_LONG).show()
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         startWakeMonitoring()
         return START_STICKY
     }
 
     private fun startWakeMonitoring() {
+        if (isDestroyed || isListening) return
+        stopWakeMonitoring()
         wakeMonitor = WakeWordMonitor(
             onWake = {
-                isListening = true
-                stopWakeMonitoring()
-                speak("Да, я слушаю")
-                startListening()
+                mainHandler.post {
+                    if (!isDestroyed && !isListening) {
+                        isListening = true
+                        stopWakeMonitoring()
+                        speak("Да, я слушаю")
+                        mainHandler.postDelayed({
+                            if (!isDestroyed) {
+                                startListening()
+                            }
+                        }, 700)
+                    }
+                }
             }
-        )
-        wakeMonitor.start()
+        ).also { it.start() }
     }
 
     private fun stopWakeMonitoring() {
         wakeMonitor?.stopMonitoring()
+        wakeMonitor = null
     }
 
     private fun startListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+        val recognizer = speechRecognizer
+        if (recognizer == null) {
+            isListening = false
+            return
+        }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите команду")
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
         }
-        speechRecognizer.startListening(intent)
+        recognizer.startListening(intent)
     }
 
     private fun handleCommand(text: String) {
-        val lower = text.lowercase().trim()
+        val lower = text.lowercase(Locale("ru", "RU")).trim()
         val response = when {
             lower.contains("привет") || lower.contains("здравствуй") -> "Привет! Чем могу помочь?"
             lower.contains("как дела") -> "У меня всё хорошо, спасибо. А у вас?"
-            lower.contains("время") -> {
+            lower.contains("время") || lower.contains("час") -> {
                 val now = Date()
                 val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
                 "Сейчас $time"
             }
-            lower.contains("дата") -> {
+            lower.contains("дата") || lower.contains("число") -> {
                 val now = Date()
                 val date = SimpleDateFormat("dd MMMM yyyy", Locale("ru")).format(now)
                 "Сегодня $date"
@@ -123,8 +158,9 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
                 "Открываю настройки"
             }
             lower.contains("стоп") || lower.contains("выключись") || lower.contains("заверши") -> {
-                stopSelf()
-                "До свидания!"
+                speak("До свидания!")
+                mainHandler.postDelayed({ stopSelf() }, 1000)
+                return
             }
             else -> getString(R.string.cmd_unknown)
         }
@@ -132,14 +168,14 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun openSettings() {
-        val intent = Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+        val intent = Intent(Settings.ACTION_SETTINGS).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         startActivity(intent)
     }
 
     private fun speak(text: String) {
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "assistant_utterance")
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "assistant_utterance")
     }
 
     private fun createNotificationChannel() {
@@ -153,7 +189,8 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
                 enableLights(false)
                 enableVibration(false)
             }
-            notificationManager.createNotificationChannel(channel)
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
         }
     }
 
@@ -162,12 +199,14 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
+            this,
+            0,
+            intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(getString(R.string.notification_text))
             .setContentIntent(pendingIntent)
@@ -178,21 +217,24 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(Locale("ru", "RU"))
+            tts?.language = Locale("ru", "RU")
         }
     }
 
     override fun onDestroy() {
+        isDestroyed = true
+        mainHandler.removeCallbacksAndMessages(null)
         stopWakeMonitoring()
         speechRecognizer?.destroy()
-        tts.shutdown()
+        speechRecognizer = null
+        tts?.shutdown()
+        tts = null
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
-        // Порог энергии звука для срабатывания пробуждения (подбирается экспериментально)
         const val ENERGY_THRESHOLD = 1200.0
     }
 }
