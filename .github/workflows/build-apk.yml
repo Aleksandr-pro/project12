@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [arena/18f6cfa1-project12]
+    branches: [arena/2dbae2fd-project12, main, arena/18f6cfa1-project12]
   workflow_dispatch:
 
 jobs:
@@ -19,22 +19,46 @@ jobs:
           distribution: 'temurin'
           java-version: 17
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK command line tools
+        run: |
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools/
+          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+          rm cmdline-tools.zip
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses
 
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Check Maven Central access
+        run: |
+          echo "Testing Maven Central..."
+          curl -sI https://repo1.maven.org/maven2/ 2>&1 | head -5 || echo "Maven Central blocked"
+          echo "Testing Google Maven..."
+          curl -sI https://maven.google.com/ 2>&1 | head -5 || echo "Google Maven blocked"
+
+      - name: Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.2.0
-
-      - name: Generate Gradle wrapper
-        run: gradle wrapper
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug --stacktrace --info 2>&1 | tee build-output.log
+
+      - name: Save build log on failure
+        if: failure()
+        run: |
+          echo "Build failed. Last 100 lines of output:"
+          tail -100 build-output.log
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
