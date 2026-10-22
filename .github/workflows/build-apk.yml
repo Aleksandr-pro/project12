@@ -2,9 +2,12 @@ name: Build APK
 
 on:
   push:
-    branches: [main, arena/2dbae2fd-project12, arena/18f6cfa1-project12]
+    branches:
+      - main
+      - 'arena/**'
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -68,15 +71,16 @@ jobs:
           retention-days: 30
 
       - name: Publish APK to GitHub Release
-        if: success() && github.ref == 'refs/heads/main'
+        if: success() && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v1.0 >/dev/null 2>&1; then
-            gh release upload v1.0 app/build/outputs/apk/debug/app-debug.apk --clobber
+          if gh release view v2.0 >/dev/null 2>&1; then
+            gh release upload v2.0 app/build/outputs/apk/debug/app-debug.apk --clobber
           else
-            gh release create v1.0 app/build/outputs/apk/debug/app-debug.apk \
-              --title "Помощник AI v1.0 (Debug APK)" \
-              --notes "Готовый установочный файл app-debug.apk для Android 7.0+."
+            gh release create v2.0 app/build/outputs/apk/debug/app-debug.apk \
+              --latest \
+              --title "Помощник AI v2.0 — Прямое распознавание и 50+ команд" \
+              --notes "Обновлённый APK с прямым непрерывным распознаванием речи (без ожидания ключевого слова) и более чем 50 голосовыми командами."
           fi

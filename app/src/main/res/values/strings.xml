@@ -1,18 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Помощник AI</string>
-    <string name="btn_start">Запустить помощника</string>
-    <string name="btn_stop">Остановить помощника</string>
+    <string name="btn_start">▶ Запустить фоновое прослушивание</string>
+    <string name="btn_stop">⏹ Остановить фонового помощника</string>
+    <string name="btn_speak_once">🎤 Сказать команду сейчас</string>
     <string name="status_stopped">Помощник остановлен</string>
-    <string name="status_running">Работает в фоне. Ожидает фразы пробуждения…</string>
+    <string name="status_running">Слушаю напрямую — говорите команду…</string>
     <string name="notification_channel_id">voice_assistant_channel</string>
     <string name="notification_channel_name">Голосовой помощник</string>
-    <string name="notification_channel_description">Работа в фоне, прослушивание микрофона и озвучка ответов</string>
-    <string name="notification_title">Помощник работает</string>
-    <string name="notification_text">Фоновое прослушивание включено</string>
-    <string name="msg_listening">Я слушаю…</string>
+    <string name="notification_channel_description">Прямое распознавание команд в фоне и голосовые ответы</string>
+    <string name="notification_title">Помощник AI активен</string>
+    <string name="notification_text">Прямое распознавание речи включено</string>
+    <string name="msg_listening">Слушаю…</string>
     <string name="msg_speaking">Говорю…</string>
-    <string name="error_permissions">Нужно разрешение на запись аудио и интернет</string>
-    <string name="error_no_recognizer">Распознаватель речи недоступен на этом устройстве</string>
-    <string name="cmd_unknown">Команда не распознана. Повторите, пожалуйста.</string>
+    <string name="error_permissions">Разрешите доступ к микрофону в настройках</string>
+    <string name="error_no_recognizer">Служба распознавания речи недоступна на устройстве</string>
+    <string name="cmd_unknown">Команда не распознана. Скажите «что ты умеешь».</string>
 </resources>

@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorPrimary">#6200EE</color>
-    <color name="colorPrimaryDark">#3700B3</color>
-    <color name="colorAccent">#03DAC6</color>
-    <color name="statusRunning">#1B5E20</color>
-    <color name="statusStopped">#B71C1C</color>
+    <color name="colorPrimary">#4F46E5</color>
+    <color name="colorPrimaryDark">#3730A3</color>
+    <color name="colorAccent">#0D9488</color>
+    <color name="statusRunning">#15803D</color>
+    <color name="statusStopped">#B91C1C</color>
+    <color name="bgScreen">#F3F4F6</color>
+    <color name="bgCard">#FFFFFF</color>
+    <color name="textPrimary">#111827</color>
+    <color name="textSecondary">#4B5563</color>
+    <color name="divider">#E5E7EB</color>
 </resources>
