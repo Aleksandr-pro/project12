@@ -16,6 +16,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      BUILD_TOOLS: "34.0.0"
 
     steps:
       - name: Checkout code
@@ -29,7 +31,7 @@ jobs:
 
       - name: Ensure Android SDK 34 is available
         run: |
-          if [ ! -d "$ANDROID_HOME/platforms/android-34" ] || [ ! -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+          if [ ! -d "$ANDROID_HOME/platforms/android-34" ] || [ ! -d "$ANDROID_HOME/build-tools/$BUILD_TOOLS" ]; then
             mkdir -p "$ANDROID_HOME/cmdline-tools"
             wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
             unzip -q cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools/"
@@ -37,9 +39,10 @@ jobs:
             mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
             rm cmdline-tools.zip
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-34" "build-tools;$BUILD_TOOLS"
           fi
           echo "sdk.dir=$ANDROID_HOME" > local.properties
+          printf 'RELEASE_SIGNING_ENABLED=%s\n' "$([ -f keystore/nelly.p12 ] && echo true || echo false)" >> "$GITHUB_ENV"
 
       - name: Install Gradle 8.9
         run: |
@@ -48,54 +51,121 @@ jobs:
           rm "$RUNNER_TEMP/gradle-8.9-bin.zip"
           echo "$RUNNER_TEMP/gradle-8.9/bin" >> "$GITHUB_PATH"
 
-      - name: Build Debug APK
+      - name: Build debug + release APK
         shell: bash
         run: |
           set -o pipefail
           gradle --version
-          if ! gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build-output.log; then
+          if ! gradle assembleDebug assembleRelease --no-daemon --stacktrace 2>&1 | tee build-output.log; then
             ERR_MSG=$(grep -E "(FAILURE:|What went wrong:|^\* | > |e: file:|error: |Exception)" build-output.log | head -n 25 | tr '\n' ' ' | cut -c1-900)
             echo "::error title=Gradle Build Error::${ERR_MSG}"
             tail -n 120 build-output.log
             exit 1
           fi
-          test -f app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          echo "--- outputs ---"
+          find app/build/outputs/apk -name "*.apk" -printf "%p %s bytes\n"
 
-      - name: Verify APK signing key
+      - name: Verify APKs and collect install info
         shell: bash
         run: |
           set -o pipefail
-          APK=app/build/outputs/apk/debug/app-debug.apk
-          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
-          if [ ! -x "$APKSIGNER" ]; then
-            echo "::warning title=Signing check skipped::apksigner not found"
-            exit 0
-          fi
-          "$APKSIGNER" verify --print-certs "$APK" || true
-          DN=$("$APKSIGNER" verify --print-certs "$APK" | grep -m1 "certificate DN" | sed 's/.*certificate DN: //' || true)
-          echo "Signer DN: $DN"
-          echo "::warning title=APK Signed By::${DN:-unknown}"
+          mkdir -p dist
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/$BUILD_TOOLS/aapt"
 
-      - name: Upload APK artifact
+          REL=""
+          DBG="app/build/outputs/apk/debug/app-debug.apk"
+          for f in app/build/outputs/apk/release/*.apk; do
+            [ -f "$f" ] || continue
+            case "$f" in *unsigned*) continue;; esac
+            REL="$f"
+          done
+
+          echo "release apk: ${REL:-<none>}"
+          echo "debug apk:   $DBG"
+
+          INFO=""
+
+          for pair in "release:$REL" "debug:$DBG"; do
+            KIND="${pair%%:*}"
+            APK="${pair#*:}"
+            [ -n "$APK" ] && [ -f "$APK" ] || continue
+
+            echo "=============== $KIND: $APK ==============="
+            "$APKSIGNER" verify -v --print-certs "$APK" 2>&1 | sed -n '1,25p' || true
+
+            DN=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | grep -m1 "certificate DN" | sed 's/.*certificate DN: //' || true)
+            CERT_SHA=$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null | grep -m1 "SHA-256 digest" | sed 's/.*SHA-256 digest: //' || true)
+            SCHEMES=$("$APKSIGNER" verify -v "$APK" 2>/dev/null | grep -E "^Verified using" | sed 's/Verified using //' | tr '\n' '|' || true)
+            BADGING=$("$AAPT" dump badging "$APK" 2>/dev/null | grep -E "^package:|^sdkVersion:|^targetSdkVersion:" | tr '\n' ' ' || true)
+            TESTO=$(unzip -p "$APK" AndroidManifest.xml 2>/dev/null | strings | grep -m1 -i "testOnly" || true)
+            FILE_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+
+            echo "DN: $DN"
+            echo "Certificate SHA-256: $CERT_SHA"
+            echo "Schemes: $SCHEMES"
+            echo "Badging: $BADGING"
+            echo "testOnly marker: ${TESTO:-<none>}"
+            echo "File SHA256: $FILE_SHA"
+
+            INFO="${INFO}\n${KIND}: DN=[${DN:-none}] cert=[${CERT_SHA:-none}] schemes=[${SCHEMES:-none}] testOnly=[${TESTO:-none}] ${BADGING}"
+          done
+
+          if [ -n "$REL" ] && [ -f "$REL" ]; then cp "$REL" dist/NellyAI-5.2.apk; fi
+          cp "$DBG" dist/NellyAI-5.2-debug.apk
+
+          # Приводим имена в SHA256SUMS к именам файлов в релизе
+          if [ -n "$REL" ] && [ -f "$REL" ]; then
+            sha256sum dist/NellyAI-5.2.apk >> dist/SHA256SUMS.txt
+          fi
+          sha256sum dist/NellyAI-5.2-debug.apk >> dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+          ls -lh dist
+
+          echo "::warning title=APK Install Info::${INFO}"
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: nelly-apk
+          path: dist/*
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 60
 
       - name: Publish APK to GitHub Release
         if: success() && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          if gh release view v5.1 >/dev/null 2>&1; then
-            gh release upload v5.1 app/build/outputs/apk/debug/app-debug.apk --clobber
+          cat > release-notes.md <<'NOTES'
+          ## Нелли AI v5.2 — установка
+
+          ### Если телефон пишет «Приложение не установлено»
+          Скорее всего на телефоне осталась старая Нелли, подписанная другим ключом.
+          **Удалите старое приложение один раз** (долгое нажатие на иконку Нелли → «Удалить»),
+          затем установите этот APK. Дальше обновления ставятся поверх без удаления.
+
+          ### Файлы
+          - `NellyAI-5.2.apk` — основной (release, подписи v1+v2+v3, без отладочного флага) — **рекомендуется**
+          - `NellyAI-5.2-debug.apk` — резервный вариант, если основной не ставится
+          - `SHA256SUMS.txt` — контрольные суммы: сверьте, что файл скачался целиком
+
+          ### Что внутри
+          - Исправлен запуск приложения (в v5.0 интерфейс обновлялся из фонового потока синтезатора речи).
+          - «Чёрный ящик»: отчёт об ошибке с кнопкой «Скопировать».
+          - Трейдинг OlympTrade по 15-минутному анализу, милый женский голос, улучшенное распознавание речи.
+          NOTES
+
+          FILES="dist/NellyAI-5.2-debug.apk dist/SHA256SUMS.txt"
+          if [ -f dist/NellyAI-5.2.apk ]; then FILES="dist/NellyAI-5.2.apk $FILES"; fi
+
+          if gh release view v5.2 >/dev/null 2>&1; then
+            gh release upload v5.2 $FILES --clobber
           else
-            gh release create v5.1 app/build/outputs/apk/debug/app-debug.apk \
+            gh release create v5.2 $FILES \
               --latest \
-              --title "Нелли AI v5.1 — Исправлен запуск приложения + трейдинг OlympTrade, милый голос и меньше недопониманий" \
-              --notes "v5.1 — КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: приложение снова открывается (в v5.0 обновление надписи на экране вызывалось из фонового потока синтезатора речи и Android закрывал приложение). Добавлен «чёрный ящик»: при любой ошибке Нелли сохраняет отчёт и показывает его на экране с кнопкой «Скопировать». Все функции v5.0 сохранены: Нелли анализирует реальные 15-минутные свечи (EUR/USD, золото, биткоин, нефть и др.), считает EMA, RSI, MACD, Bollinger, Stochastic, ATR и уровни, выдаёт сигнал ВВЕРХ/ВНИЗ с уверенностью и по команде «торгуй за меня» открывает и сама нажимает сделку в OlympTrade (кнопки «Вверх/Вниз», выбор актива, экспирация 15 минут, демо-режим по умолчанию). Плюс новый милый женский голос с тремя характерами и выбором конкретного русского голоса, а также улучшенное распознавание речи (сортировка гипотез по уверенности и выбор лучшей команды) — меньше недопониманий. Добавлена кнопка «Разрешить всё» для всех разрешений."
+              --title "Нелли AI v5.2 — установка исправлена: release APK, подписи v1+v2+v3, контрольные суммы" \
+              --notes-file release-notes.md
           fi

@@ -15,8 +15,8 @@ android {
         applicationId 'com.example.project12'
         minSdk 24
         targetSdk 34
-        versionCode 8
-        versionName '5.1'
+        versionCode 9
+        versionName '5.2'
     }
 
     signingConfigs {
@@ -27,6 +27,11 @@ android {
                 keyAlias 'nelly'
                 keyPassword 'nelly2026'
                 storeType 'PKCS12'
+                // Максимальная совместимость: JAR-подпись (v1) + APK Signature Scheme v2 и v3.
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing false
             }
         }
     }
