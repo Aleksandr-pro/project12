@@ -86,7 +86,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var fullGuideSections: List<String>
 
     private val busListener: () -> Unit = {
-        renderState()
+        runCatching { renderState() }.onFailure { safeSetupFailure("Экран состояния", it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -761,6 +761,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun renderState() {
+        if (isFinishing || isDestroyed) return
         val running = AssistantStateBus.isServiceRunning
         val status = AssistantStateBus.statusText.ifEmpty {
             if (running) getString(R.string.status_running) else getString(R.string.status_stopped)
