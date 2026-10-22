@@ -62,14 +62,59 @@ class CommandProcessor(
     fun stripWakeWordPrefix(raw: String): Pair<Boolean, String> {
         val trimmed = raw.trim()
         val regex = Regex(
-            "^(?:эй\\s+|привет\\s+|слушай\\s+|алло\\s+)?(?:помощник|ассистент|джарвис|бот)[,\\s:!-]*(.*)$",
+            "^(?:эй\\s+|привет\\s+|слушай\\s+|алло\\s+)?(?:нелли|нели|нэлли|нэли|нелля|неля|нелле|нелличка|nelly|neli|помощница|помощник|ассистент|бот)[,\\s:!-]*(.*)$",
             RegexOption.IGNORE_CASE
         )
-        val m = regex.find(trimmed) ?: return false to trimmed
-        return true to m.groupValues[1].trim()
+        val m = regex.find(trimmed)
+        if (m != null) {
+            return true to m.groupValues[1].trim()
+        }
+
+        // Phonetic wake-word tolerance (e.g. ASR hears "неле, включи ватсап")
+        val spaceIdx = trimmed.indexOf(' ')
+        val firstToken = (if (spaceIdx > 0) trimmed.substring(0, spaceIdx) else trimmed)
+            .trim(' ', ',', '.', '!', '?', ':', '-')
+        if (PhoneticSimilarity.wordSimilarity(firstToken, "нелли") >= 0.80) {
+            val rest = if (spaceIdx > 0) trimmed.substring(spaceIdx + 1).trim() else ""
+            return true to rest
+        }
+
+        return false to trimmed
+    }
+
+    /**
+     * Evaluates all speech-recognition candidates (N-best hypotheses) against local commands,
+     * contact calling, and fuzzy app launching BEFORE falling back to free-form cloud answers.
+     * This dramatically improves accuracy when a word's pronunciation is ambiguous!
+     */
+    fun processCandidates(candidates: List<String>): Pair<String, CommandResult> {
+        val cleanedList = candidates.map { it.trim() }.filter { it.isNotEmpty() }
+        if (cleanedList.isEmpty()) {
+            return "" to CommandResult(spokenResponse = null, matched = false)
+        }
+
+        // Pass 1: Check ALL candidates locally (without cloud fallback) so candidate #2/#3 can rescue a misheard app or contact name!
+        for (candidate in cleanedList) {
+            val (hadWake, stripped) = stripWakeWordPrefix(candidate)
+            val effective = if (hadWake && stripped.isNotEmpty()) stripped else candidate
+            val localRes = processInternal(effective, allowCloudFallback = false)
+            if (localRes.matched) {
+                return candidate to localRes
+            }
+        }
+
+        // Pass 2: None of the N-best candidates matched a phone command/app/contact -> answer primary via freeform AI / Wikipedia
+        val primary = cleanedList.first()
+        val (hadWake, stripped) = stripWakeWordPrefix(primary)
+        val effective = if (hadWake && stripped.isNotEmpty()) stripped else primary
+        return primary to processInternal(effective, allowCloudFallback = true)
     }
 
     fun process(rawInput: String): CommandResult {
+        return processInternal(rawInput, allowCloudFallback = true)
+    }
+
+    private fun processInternal(rawInput: String, allowCloudFallback: Boolean): CommandResult {
         val userRaw = rawInput.trim()
         if (userRaw.isEmpty()) {
             return CommandResult(spokenResponse = null, matched = false)
@@ -83,8 +128,10 @@ class CommandProcessor(
             }
             is ContextualResolution.RewrittenCommand -> {
                 val res = executeCore(ctxRes.command, originalUserDisplay = userRaw)
-                res.spokenResponse?.let { ConversationContext.recordTurn(userRaw, it) }
-                return res
+                if (res.matched) {
+                    res.spokenResponse?.let { ConversationContext.recordTurn(userRaw, it) }
+                    return res
+                }
             }
             ContextualResolution.PassThrough -> Unit
         }
@@ -93,7 +140,7 @@ class CommandProcessor(
         val strippedNatural = NaturalIntentEngine.stripConversationalFillers(userRaw)
         val lowerNatural = strippedNatural.lowercase(ruLocale).replace('ё', 'е').trim(' ', '.', ',', '!', '?')
 
-        // Step C: Execute explicit or flexible command matching
+        // Step C: Execute explicit or pronunciation-tolerant command matching
         val directRes = executeCore(strippedNatural, originalUserDisplay = userRaw)
         if (directRes.matched) {
             directRes.spokenResponse?.let { ConversationContext.recordTurn(userRaw, it) }
@@ -121,13 +168,17 @@ class CommandProcessor(
             }
         }
 
+        if (!allowCloudFallback) {
+            return CommandResult(spokenResponse = null, matched = false)
+        }
+
         // Step E: Free-form Contextual Knowledge / AI Answer (when user asks an arbitrary question or speaks freely)
         KnowledgeAndCurrencyClient.answerFreeformQuestionAsync(strippedNatural) { smartReply ->
             ConversationContext.recordTurn(userRaw, smartReply)
             onAsyncReply(userRaw, smartReply)
         }
         return CommandResult(
-            spokenResponse = "Секунду, думаю…",
+            spokenResponse = "Секунду, сейчас отвечу…",
             asyncPending = true,
             matched = true
         )
@@ -144,21 +195,24 @@ class CommandProcessor(
             return CommandResult(spokenResponse = null, stopSpeakingOnly = true)
         }
         if (lower in listOf("стоп", "выключись", "отключись", "заверши работу", "спать") ||
-            lower.contains("останови помощник") || lower.contains("выключи помощник") || lower.contains("отключи помощник")
+            lower.contains("останови помощни") || lower.contains("выключи помощни") || lower.contains("отключи помощни") ||
+            lower.contains("останови нелли") || lower.contains("выключи нелли")
         ) {
-            return CommandResult(spokenResponse = "Выключаюсь. Всегда на связи!", shouldStopService = true)
+            return CommandResult(spokenResponse = "Выключаюсь. Зовите меня в любое время!", shouldStopService = true)
         }
         if (lower.contains("очисти историю") || lower.contains("сотри историю диалога")) {
             AssistantStateBus.clearHistory()
             return CommandResult("История диалога очищена.")
         }
-        if (lower.contains("прямой режим") || lower.contains("слушай напрямую") || lower.contains("без ключевого слова")) {
+        if (lower.contains("прямой режим") || lower.contains("слушай напрямую") || lower.contains("без ключевого слова") || lower.contains("без имени")) {
             AssistantStateBus.setDirectMode(context, true)
             return CommandResult("Включён прямой режим — говорите команды сразу своими словами.")
         }
-        if (lower.contains("режим ключевого слова") || lower.contains("только по слову помощник")) {
+        if (lower.contains("режим ключевого слова") || lower.contains("только по имени") ||
+            lower.contains("только по слову нелли") || lower.contains("только по слову помощник")
+        ) {
             AssistantStateBus.setDirectMode(context, false)
-            return CommandResult("Включён режим по слову «Помощник».")
+            return CommandResult("Хорошо! Теперь буду откликаться по имени «Нелли».")
         }
         if (lower.contains("говори быстрее") || lower.contains("быстрее говори") || lower.contains("ускорь речь")) {
             return CommandResult(spokenResponse = "Перехожу на быстрый темп речи.", speechRate = 1.35f)
@@ -239,34 +293,37 @@ class CommandProcessor(
             return CommandResult(if (safeStart(intent)) "Открываю папку загрузок." else "Не удалось открыть загрузки.")
         }
 
-        // 14. System Settings (15 sections)
-        handleSettingsCommand(lower)?.let { return CommandResult(it) }
-
-        // 15. YouTube & Music Genres
+        // 14. YouTube Video/Song Search (only when searching a specific video/song)
         handleYouTubeOrMusic(lower, original)?.let { return CommandResult(it) }
 
-        // 16. Maps, Navigation & 20+ Nearby Place types
+        // 15. Pronunciation-Tolerant App Launcher (YouTube, WhatsApp, Telegram, Instagram, Kaspi, 2GIS, or ANY installed app!)
+        AppLauncherEngine.tryLaunchFromUtterance(context, lower, original)?.let { return CommandResult(it) }
+
+        // 16. System Settings (15 sections)
+        handleSettingsCommand(lower)?.let { return CommandResult(it) }
+
+        // 17. Maps, Navigation & 20+ Nearby Place types
         handleMapsCommand(lower, original)?.let { return CommandResult(it) }
 
-        // 17. Translator (12 languages + slot filling if phrase omitted)
+        // 18. Translator (12 languages + slot filling if phrase omitted)
         handleTranslateCommand(lower, original)?.let { return CommandResult(it) }
 
-        // 18. Spoken Wikipedia / Encyclopedia ("кто такой ...", "что такое ...", "расскажи про ...")
+        // 19. Spoken Wikipedia / Encyclopedia ("кто такой ...", "что такое ...", "расскажи про ...")
         handleWikipediaAndKnowledge(lower, original, originalUserDisplay)?.let { return it }
 
-        // 19. Open Website / News / Images or Any Installed App on Phone
+        // 20. Open Website / News / Images / Check Installed Apps
         handleSitesAndApps(lower, original)?.let { return CommandResult(it) }
 
-        // 20. Interactive Games (Cities, Riddles), Randomizer, Choice Picker ("или"), Jokes, Facts, Advice, Breathing
+        // 21. Interactive Games (Cities, Riddles), Randomizer, Choice Picker ("или"), Jokes, Facts, Advice, Breathing
         handleGamesAndFun(lower, original)?.let { return CommandResult(it) }
 
-        // 21. Help & Capabilities
+        // 22. Help & Capabilities
         if (lower.contains("что ты умеешь") || lower.contains("список команд") ||
             lower.contains("какие команды") || lower == "помощь" || lower == "команды" || lower == "справка" ||
-            lower.contains("чему ты научился")
+            lower.contains("чему ты научилась") || lower.contains("чему ты научился")
         ) {
             return CommandResult(
-                "Я понимаю более ста команд и обычную разговорную речь без шаблонов! Можете сказать своими словами: «тут темно», «брать зонт?», «телефон садится?», «раздели счёт 12000 на троих», «курс доллара», «а завтра?», «сыграем в города» или попросить открыть любое приложение."
+                "Меня зовут Нелли! Я понимаю более ста действий и живую речь без шаблонов: звоню вашим контактам по имени («позвони маме», «включи звонок Саше»), открываю Ютуб, Ватсап, Телеграм, Инстаграм и любые приложения на телефоне даже при неточном произношении, считаю валюты и отвечаю на вопросы."
             )
         }
 
@@ -358,8 +415,8 @@ class CommandProcessor(
             when (keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PAUSE -> "Музыка поставлена на паузу."
                 KeyEvent.KEYCODE_MEDIA_PLAY -> "Продолжаю воспроизведение."
-                KeyEvent.KEYCODE_MEDIA_NEXT -> "Переключил на следующий трек."
-                else -> "Вернул предыдущий трек."
+                KeyEvent.KEYCODE_MEDIA_NEXT -> "Переключила на следующий трек."
+                else -> "Вернула предыдущий трек."
             }
         } catch (_: Exception) {
             "Не удалось отправить команду плееру."
@@ -452,7 +509,7 @@ class CommandProcessor(
             val next = (am.getStreamVolume(AudioManager.STREAM_MUSIC) + step).coerceAtMost(maxVol)
             am.setStreamVolume(AudioManager.STREAM_MUSIC, next, AudioManager.FLAG_SHOW_UI)
             ConversationContext.lastAction = "VOLUME_UP"
-            return "Сделал громче: ${(next * 100) / maxVol}%."
+            return "Сделала громче: ${(next * 100) / maxVol}%."
         }
 
         if (lower in listOf("тише", "потише", "убавь звук", "уменьши громкость", "сделай тише", "убавь громкость", "сделай потише")) {
@@ -460,7 +517,7 @@ class CommandProcessor(
             val next = (am.getStreamVolume(AudioManager.STREAM_MUSIC) - step).coerceAtLeast(0)
             am.setStreamVolume(AudioManager.STREAM_MUSIC, next, AudioManager.FLAG_SHOW_UI)
             ConversationContext.lastAction = "VOLUME_DOWN"
-            return "Сделал тише: ${(next * 100) / maxVol}%."
+            return "Сделала тише: ${(next * 100) / maxVol}%."
         }
 
         return null
@@ -862,14 +919,14 @@ class CommandProcessor(
             val list = loadStringList("shopping_list")
             list.add(item)
             saveStringList("shopping_list", list)
-            return "Добавил в покупки: $item."
+            return "Добавила в покупки: $item."
         }
         if (lower.startsWith("вычеркни из покупок ") || lower.startsWith("удали из покупок ")) {
             val item = original.replace(Regex("^(?:вычеркни|удали)\\s+из\\s+покупок\\s+", RegexOption.IGNORE_CASE), "").trim().lowercase(ruLocale)
             val list = loadStringList("shopping_list")
             val removed = list.removeAll { it.lowercase(ruLocale).contains(item) }
             saveStringList("shopping_list", list)
-            return if (removed) "Вычеркнул «$item» из списка покупок." else "Пункт «$item» не найден в списке."
+            return if (removed) "Вычеркнула «$item» из списка покупок." else "Пункт «$item» не найден в списке."
         }
         if (lower.contains("список покупок") || lower == "что нужно купить" || lower == "что купить") {
             if (lower.contains("очисти") || lower.contains("удали все")) {
@@ -936,10 +993,10 @@ class CommandProcessor(
             val notes = loadStringList("voice_notes")
             notes.add(note)
             saveStringList("voice_notes", notes)
-            return "Запомнил: «$note»."
+            return "Запомнила: «$note»."
         }
         if (lower.contains("прочитай заметк") || lower.contains("мои заметк") ||
-            lower.contains("покажи заметк") || lower.contains("что я просил запомнить") || lower == "заметки"
+            lower.contains("покажи заметк") || lower.contains("что я просил запомнить") || lower.contains("что я просила запомнить") || lower == "заметки"
         ) {
             val notes = loadStringList("voice_notes")
             return if (notes.isEmpty()) "Сохранённых заметок пока нет." else "Ваши заметки: ${notes.mapIndexed { i, s -> "${i + 1}) $s" }.joinToString("; ")}."
@@ -1004,7 +1061,7 @@ class CommandProcessor(
             .find(original)
         if (setCityMatch != null) {
             val saved = WeatherClient.saveCity(context, setCityMatch.groupValues[1])
-            return CommandResult("Отлично, запомнил ваш город: $saved.")
+            return CommandResult("Отлично, запомнила ваш город: $saved.")
         }
 
         if (lower.contains("погод") || lower.contains("сколько градусов") || lower.contains("температура на улице") ||
@@ -1142,9 +1199,16 @@ class CommandProcessor(
             return if (safeStart(intent)) "Открываю создание контакта." else "Не удалось открыть Контакты."
         }
 
-        // Send message directly to WhatsApp or Telegram
-        if (lower.startsWith("напиши в ватсап ") || lower.startsWith("отправь в ватсап ") || lower.startsWith("напиши в whatsapp ")) {
-            val msg = original.replace(Regex("^(?:напиши|отправь)\\s+в\\s+(?:ватсап|whatsapp)\\s+", RegexOption.IGNORE_CASE), "").trim()
+        // Voice Call to Contact by Name or Number + WhatsApp contact message/call!
+        ContactCaller.handleCallOrContactMessage(context, lower, original)?.let { return it }
+
+        // Send message directly to WhatsApp or Telegram (tolerating pronunciation variants!)
+        val waMsgMatch = Regex(
+            "^(?:напиши|отправь)\\s+в\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|воцап\\w*|whatsapp)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (waMsgMatch != null) {
+            val msg = waMsgMatch.groupValues[1].trim()
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 setPackage("com.whatsapp")
@@ -1154,8 +1218,12 @@ class CommandProcessor(
             return if (safeStart(intent)) "Открываю WhatsApp для выбора получателя." else "WhatsApp не установлен на устройстве."
         }
 
-        if (lower.startsWith("напиши в телеграм ") || lower.startsWith("отправь в телеграм ") || lower.startsWith("напиши в telegram ")) {
-            val msg = original.replace(Regex("^(?:напиши|отправь)\\s+в\\s+(?:телеграм|telegram)\\s+", RegexOption.IGNORE_CASE), "").trim()
+        val tgMsgMatch = Regex(
+            "^(?:напиши|отправь)\\s+в\\s+(?:телеграм\\w*|тилеграм\\w*|телегу|телеге|telegram)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (tgMsgMatch != null) {
+            val msg = tgMsgMatch.groupValues[1].trim()
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 setPackage("org.telegram.messenger")
@@ -1173,20 +1241,6 @@ class CommandProcessor(
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             return if (safeStart(intent)) "Открываю почтовый клиент." else "Почтовое приложение не найдено."
-        }
-
-        if (lower.startsWith("позвони") || lower.startsWith("набери")) {
-            val digits = original.filter { it.isDigit() || it == '+' }
-            return if (digits.length >= 3) {
-                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$digits")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                if (safeStart(intent)) "Открываю набор номера $digits." else "Не удалось открыть телефон."
-            } else {
-                val contactsIntent = Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                if (safeStart(contactsIntent)) "Открываю контакты для звонка." else {
-                    safeStart(Intent(Intent.ACTION_DIAL).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
-                    "Открываю набор номера."
-                }
-            }
         }
 
         if (lower.startsWith("напиши смс") || lower.startsWith("отправь смс") ||
@@ -1426,146 +1480,18 @@ class CommandProcessor(
             openUrl("https://www.google.com/search?tbm=isch&q=${URLEncoder.encode(q, "UTF-8")}")
             return "Показываю картинки по запросу «$q»."
         }
-        if (lower.startsWith("есть ли у меня приложение ") || lower.startsWith("установлен ли ")) {
-            val appName = original.replace(Regex("^(?:есть ли у меня приложение|установлен ли)\\s+", RegexOption.IGNORE_CASE), "").trim()
-            val found = findAppPackageByKeywords(listOf(appName.lowercase(ruLocale)))
-            return if (found != null) "Да, приложение «${found.first}» установлено на телефоне." else "Приложение «$appName» не найдено на устройстве."
+        if (lower.startsWith("есть ли у меня приложение ") || lower.startsWith("установлен ли ") || lower.startsWith("установлено ли ")) {
+            val appName = original.replace(Regex("^(?:есть ли у меня приложение|установлено ли|установлен ли)\\s+", RegexOption.IGNORE_CASE), "").trim()
+            val (installed, label) = AppLauncherEngine.isAppInstalledByFuzzyName(context, appName)
+            return if (installed) "Да, приложение «$label» установлено на телефоне." else "Приложение «$appName» не найдено на устройстве."
         }
 
-        if (lower in listOf("открой", "запусти", "открой приложение")) {
+        if (lower in listOf("открой", "запусти", "открой приложение", "включи приложение", "запусти приложение")) {
             ConversationContext.setPendingSlot(PendingSlot.OPEN_APP_NAME)
-            return "Какое приложение открыть?"
+            return "Какое приложение открыть? Например: Ютуб, Ватсап, Телеграм или Инстаграм."
         }
 
-        val openMatch = Regex("^(?:открой|запусти|включи приложение|перейди в)\\s+(.+)$", RegexOption.IGNORE_CASE)
-            .find(original) ?: return null
-
-        val target = openMatch.groupValues[1].trim()
-        return openAppOrShortcut(target)
-    }
-
-    @Suppress("DEPRECATION")
-    private fun openAppOrShortcut(rawTarget: String): String {
-        val target = rawTarget.lowercase(ruLocale).replace('ё', 'е').trim(' ', '.', ',', '!', '?')
-
-        val wellKnownSites = mapOf(
-            "гитхаб" to "https://github.com",
-            "github" to "https://github.com",
-            "википедию" to "https://ru.m.wikipedia.org",
-            "википедия" to "https://ru.m.wikipedia.org",
-            "гугл" to "https://www.google.com",
-            "яндекс" to "https://ya.ru"
-        )
-        for ((siteKey, url) in wellKnownSites) {
-            if (target == "сайт $siteKey" || target == siteKey) {
-                openUrl(url)
-                return "Открываю $rawTarget."
-            }
-        }
-
-        when {
-            target.contains("галере") || target in listOf("фото", "мои фото", "фотографии") -> {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    type = "image/*"
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                if (safeStart(intent)) return "Открываю галерею."
-            }
-            target.contains("контакт") -> {
-                val intent = Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                if (safeStart(intent)) return "Открываю контакты."
-            }
-            target.contains("телефон") || target.contains("звонилк") -> {
-                val intent = Intent(Intent.ACTION_DIAL).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                if (safeStart(intent)) return "Открываю телефон."
-            }
-            target.contains("калькулятор") -> {
-                val intent = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_CALCULATOR).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                if (safeStart(intent)) return "Открываю калькулятор."
-            }
-            target.contains("браузер") || target == "интернет" -> {
-                openUrl("https://www.google.com")
-                return "Открываю браузер."
-            }
-            target.contains("почт") && !launchByKeyword(listOf("gmail", "почта", "mail")) -> {
-                val intent = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                if (safeStart(intent)) return "Открываю почту."
-            }
-            target.contains("ютуб") || target == "youtube" -> {
-                if (!launchByKeyword(listOf("youtube", "ютуб"))) openUrl("https://m.youtube.com")
-                return "Открываю YouTube."
-            }
-            target.contains("карт") || target.contains("навигатор") -> {
-                if (!launchByKeyword(listOf("maps", "карты", "2gis", "2гис", "навигатор"))) openGeoQuery("")
-                return "Открываю карты."
-            }
-        }
-
-        val aliases: Map<String, List<String>> = mapOf(
-            "ватсап" to listOf("whatsapp", "ватсап"),
-            "вотсап" to listOf("whatsapp"),
-            "whatsapp" to listOf("whatsapp"),
-            "телеграм" to listOf("telegram", "телеграм"),
-            "телегу" to listOf("telegram", "телеграм"),
-            "telegram" to listOf("telegram"),
-            "каспи" to listOf("kaspi", "каспи"),
-            "kaspi" to listOf("kaspi"),
-            "халык" to listOf("halyk", "homebank"),
-            "2гис" to listOf("2gis", "2гис", "дубльгис"),
-            "дубльгис" to listOf("2gis", "2гис"),
-            "инстаграм" to listOf("instagram", "инстаграм"),
-            "инсту" to listOf("instagram"),
-            "тикток" to listOf("tiktok", "тик ток"),
-            "тик ток" to listOf("tiktok"),
-            "вконтакте" to listOf("vk", "вконтакте"),
-            "вк" to listOf("vk", "вконтакте"),
-            "хром" to listOf("chrome", "хром"),
-            "плей маркет" to listOf("play маркет", "google play", "vending"),
-            "маркет" to listOf("play маркет", "google play"),
-            "яндекс" to listOf("яндекс", "yandex"),
-            "спотифай" to listOf("spotify")
-        )
-
-        val searchTerms = mutableListOf(target)
-        for ((key, vals) in aliases) {
-            if (target.contains(key)) searchTerms.addAll(vals)
-        }
-
-        if (launchByKeyword(searchTerms.distinct())) {
-            ConversationContext.lastAction = "OPEN_APP"
-            return "Открываю «$rawTarget»."
-        }
-
-        return "Приложение «$rawTarget» не найдено на телефоне."
-    }
-
-    @Suppress("DEPRECATION")
-    private fun findAppPackageByKeywords(keywords: List<String>): Pair<String, String>? {
-        return try {
-            val pm = context.packageManager
-            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
-            val apps = pm.queryIntentActivities(mainIntent, 0)
-            val match = apps.firstOrNull { resolveInfo ->
-                val label = resolveInfo.loadLabel(pm).toString().lowercase(ruLocale).replace('ё', 'е')
-                val pkg = resolveInfo.activityInfo.packageName.lowercase(Locale.US)
-                keywords.any { kw -> kw.length >= 2 && (label.contains(kw) || pkg.contains(kw)) }
-            } ?: return null
-            match.loadLabel(pm).toString() to match.activityInfo.packageName
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun launchByKeyword(keywords: List<String>): Boolean {
-        val found = findAppPackageByKeywords(keywords) ?: return false
-        val launchIntent = context.packageManager.getLaunchIntentForPackage(found.second)?.apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        } ?: return false
-        return safeStart(launchIntent)
+        return AppLauncherEngine.tryLaunchFromUtterance(context, lower, original)
     }
 
     private fun handleGamesAndFun(lower: String, original: String): String? {
@@ -1681,22 +1607,24 @@ class CommandProcessor(
 
     private fun handleConversation(lower: String): String? {
         return when {
-            lower.contains("доброе утро") -> "Доброе утро! Пусть день сложится продуктивно. Чем помочь?"
-            lower.contains("добрый день") -> "Добрый день! Я на связи — говорите своими словами, что нужно сделать."
+            lower in listOf("нелли", "нели", "нэлли", "нэли", "нелля", "неля") ->
+                "Да, я здесь! Чем помочь?"
+            lower.contains("доброе утро") -> "Доброе утро! Я Нелли. Пусть день сложится отлично — чем помочь?"
+            lower.contains("добрый день") -> "Добрый день! Нелли на связи — говорите своими словами, что нужно сделать."
             lower.contains("добрый вечер") -> "Добрый вечер! Как прошёл ваш день? Чем помочь?"
             lower.contains("спокойной ночи") || lower.contains("доброй ночи") -> "Спокойной ночи! Хотите, поставлю будильник на утро?"
             lower in listOf("привет", "здравствуй", "здравствуйте", "салам", "салем", "приветик", "хэй") ->
-                "Привет! Можете не заучивать команды — просто скажите по-человечески, что вам нужно."
+                "Привет! Меня зовут Нелли. Можете говорить своими словами — я позвоню контактам или открою любое приложение!"
             lower.contains("как дела") || lower.contains("как ты") || lower.contains("как жизнь") ->
-                "Отлично! Память чистая, микрофон слушает внимательно. Что сделаем?"
+                "У меня всё отлично! Микрофон слушает внимательно. Кому позвоним или что откроем?"
             lower.contains("спасибо") || lower.contains("благодарю") || lower == "рахмет" ->
-                "Всегда пожалуйста! Рад помочь."
-            lower.contains("молодец") || lower.contains("красавчик") || lower.contains("умница") || lower == "круто" || lower == "супер" ->
-                "Спасибо, стараюсь понимать вас с полуслова!"
-            lower.contains("кто ты") || lower.contains("как тебя зовут") ->
-                "Я умный голосовой помощник для Android (версия 3.0). Понимаю больше ста действий и контекст разговора."
+                "Всегда пожалуйста! Очень рада помочь."
+            lower.contains("молодец") || lower.contains("красавица") || lower.contains("умница") || lower == "круто" || lower == "супер" ->
+                "Спасибо, мне очень приятно! Стараюсь понимать вас с полуслова."
+            lower.contains("кто ты") || lower.contains("как тебя зовут") || lower.contains("твое имя") ->
+                "Меня зовут Нелли! Я ваша голосовая помощница на Android. Звоню контактам по имени, открываю Ютуб, Ватсап, Телеграм, Инстаграм и понимаю живую речь."
             lower in listOf("пока", "до свидания", "увидимся") ->
-                "До встречи! Чтобы полностью остановить фоновый режим, скажите «выключи помощника»."
+                "До встречи! Чтобы полностью остановить фоновый режим, скажите «выключи Нелли»."
             else -> null
         }
     }

@@ -44,10 +44,17 @@ object NaturalIntentEngine {
 
     private val verbInfinitiveReplacements = listOf(
         "включить" to "включи",
+        "включать" to "включи",
+        "включай" to "включи",
         "выключить" to "выключи",
+        "выключать" to "выключи",
         "отключить" to "выключи",
         "открыть" to "открой",
+        "открывать" to "открой",
+        "открывай" to "открой",
         "запустить" to "запусти",
+        "запускать" to "запусти",
+        "запускай" to "запусти",
         "поставить" to "поставь",
         "установить" to "установи",
         "найти" to "найди",
@@ -69,7 +76,9 @@ object NaturalIntentEngine {
         "уменьшить" to "уменьши",
         "увеличить" to "увеличь",
         "позвонить" to "позвони",
+        "звонить" to "позвони",
         "набрать" to "набери",
+        "набирать" to "набери",
         "отправить" to "отправь",
         "написать" to "напиши",
         "скопировать" to "скопируй",
@@ -81,10 +90,11 @@ object NaturalIntentEngine {
         var s = raw.trim()
         // Repeatedly strip polite conversational prefixes so users can speak freely
         val prefixPattern = Regex(
-            "^(?:слушай|слышь|братан|брат|друг|дорогая|дорогой|короче|кстати|вообще|так|ну|эй|алло|" +
+            "^(?:нелли|нели|нэлли|нэли|нелля|неля|нелличка|nelly|помощница|помощник|ассистент|" +
+                "слушай|слышь|братан|брат|друг|подруга|дорогая|дорогой|короче|кстати|вообще|так|ну|эй|алло|" +
                 "скажи мне пожалуйста|скажи пожалуйста|подскажи мне пожалуйста|подскажи пожалуйста|" +
-                "скажи-ка|подскажи-ка|подскажи|будь добр|будь добра|если не сложно|если не трудно|" +
-                "не мог бы ты|не могла бы ты|можешь ли ты|можешь пожалуйста|ты можешь|можешь|" +
+                "скажи-ка|подскажи-ка|подскажи|будь добра|будь добр|если не сложно|если не трудно|" +
+                "не могла бы ты|не мог бы ты|можешь ли ты|можешь пожалуйста|ты можешь|можешь|" +
                 "мне бы хотелось чтобы ты|я хочу чтобы ты|мне нужно чтобы ты|мне надо чтобы ты|" +
                 "я бы хотел|я бы хотела|я хочу|мне нужно|мне надо|надо бы|надо|" +
                 "помоги мне|помоги|пожалуйста|плиз|давай-ка|ну-ка|быстренько|срочно)[,\\s!:-]+",
@@ -157,9 +167,9 @@ object NaturalIntentEngine {
 
         // 3. Pending Multi-Turn Slot Filling
         if (ConversationContext.peekPendingSlot() != null) {
-            if (lower in listOf("отмена", "отмени", "не надо", "передумал", "забудь")) {
+            if (lower in listOf("отмена", "отмени", "не надо", "передумал", "передумала", "забудь")) {
                 ConversationContext.clearPendingSlot()
-                return ContextualResolution.DirectReply("Хорошо, отменил.")
+                return ContextualResolution.DirectReply("Хорошо, отменила.")
             }
             val consumed = ConversationContext.consumePendingSlot()
             if (consumed != null) {
@@ -173,6 +183,7 @@ object NaturalIntentEngine {
                     PendingSlot.SEARCH_QUERY -> "найди $trimmed"
                     PendingSlot.TRANSLATE_PHRASE -> "переведи $extra $trimmed".trim()
                     PendingSlot.OPEN_APP_NAME -> "открой $trimmed"
+                    PendingSlot.CALL_TARGET -> "позвони $trimmed"
                 }
                 return ContextualResolution.RewrittenCommand(rewritten)
             }

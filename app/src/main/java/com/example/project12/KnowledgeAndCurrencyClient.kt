@@ -113,9 +113,9 @@ object KnowledgeAndCurrencyClient {
             val reply = try {
                 askCloudAssistantBlocking(userQuestion)
                     ?: loadWikipediaBlocking(extractKeyTopic(userQuestion))
-                    ?: "Я пока не уверен, как выполнить «$userQuestion». Попробуйте сказать чуть иначе или скажите «загугли $userQuestion»."
+                    ?: "Я пока не совсем поняла запрос «$userQuestion». Попробуйте сказать чуть иначе или скажите «найди $userQuestion»."
             } catch (_: Exception) {
-                "Не совсем понял запрос «$userQuestion». Скажите «найди $userQuestion» для поиска в Google."
+                "Не совсем поняла запрос «$userQuestion». Скажите «найди $userQuestion» для поиска в Google."
             }
             mainHandler.post { onResult(reply) }
         }
@@ -163,7 +163,7 @@ object KnowledgeAndCurrencyClient {
 
     private fun askCloudAssistantBlocking(question: String): String? {
         val recent = ConversationContext.getRecentContextSummary()
-        val systemInstruction = "Ты голосовой помощник на Android. Ответь пользователю на русском языке коротко (1-2 предложения), простыми словами для озвучки вслух, без символов форматирования и звёздочек."
+        val systemInstruction = "Тебя зовут Нелли, ты дружелюбная голосовая помощница на Android. Ответь пользователю на русском языке от женского лица коротко (1-2 предложения), простыми словами для озвучки вслух, без символов форматирования и звёздочек."
         val fullPrompt = if (recent.isNotEmpty()) {
             "$systemInstruction\nКонтекст:\n$recent\nЗапрос: $question"
         } else {
