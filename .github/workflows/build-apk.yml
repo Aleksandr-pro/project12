@@ -39,7 +39,7 @@ jobs:
 
       - name: Install Gradle
         run: |
-          wget -q https://services.gradle.org/distributions/gradle-8.2.0-bin.zip -O gradle.zip
+          curl -L -s https://services.gradle.org/distributions/gradle-8.2.0-bin.zip -o gradle.zip
           unzip -q gradle.zip -d /opt
           rm gradle.zip
           echo "GRADLE_HOME=/opt/gradle-8.2.0" >> $GITHUB_ENV
