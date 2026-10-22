@@ -37,13 +37,13 @@ jobs:
         run: |
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.2.0
+      - name: Install Gradle via apt
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq gradle
 
       - name: Generate Gradle wrapper
-        run: gradle wrapper
+        run: gradle wrapper --gradle-version 8.2.0
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug
