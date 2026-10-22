@@ -13,6 +13,12 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
+enum class ForecastMode {
+    NOW,
+    TOMORROW,
+    ADVICE
+}
+
 object WeatherClient {
 
     private const val PREFS_NAME = "assistant_prefs"
@@ -38,8 +44,6 @@ object WeatherClient {
         "уральске" to "Уральск",
         "павлодаре" to "Павлодар",
         "костанае" to "Костанай",
-        "усть-каменогорске" to "Усть-Каменогорск",
-        "семее" to "Семей",
         "ташкенте" to "Ташкент",
         "бишкеке" to "Бишкек",
         "минске" to "Минск",
@@ -48,16 +52,17 @@ object WeatherClient {
         "казани" to "Казань",
         "тюмени" to "Тюмень",
         "перми" to "Пермь",
-        "твери" to "Тверь",
         "самаре" to "Самара",
         "уфе" to "Уфа",
         "омске" to "Омск",
         "челябинске" to "Челябинск",
-        "ростове" to "Ростов-на-Дону",
         "краснодаре" to "Краснодар",
         "сочи" to "Сочи",
         "дубае" to "Дубай",
-        "стамбуле" to "Стамбул"
+        "стамбуле" to "Стамбул",
+        "лондоне" to "Лондон",
+        "париже" to "Париж",
+        "токио" to "Токио"
     )
 
     fun getSavedCity(context: Context): String {
@@ -72,12 +77,14 @@ object WeatherClient {
             .edit()
             .putString(KEY_CITY, normalized)
             .apply()
+        ConversationContext.lastWeatherCity = normalized
         return normalized
     }
 
     fun normalizeCityCandidate(raw: String): String {
         val clean = raw.trim().trim(' ', ',', '.', '?', '!', '«', '»', '"')
             .replace(Regex("^(?:городе|город)\\s+", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s+(?:сегодня|сейчас|завтра|на завтра|пожалуйста)$", RegexOption.IGNORE_CASE), "")
             .trim()
         val lower = clean.lowercase(Locale("ru", "RU"))
         knownCases[lower]?.let { return it }
@@ -100,20 +107,29 @@ object WeatherClient {
         return list.distinct()
     }
 
-    fun fetchWeatherAsync(context: Context, cityQuery: String?, onResult: (String) -> Unit) {
+    fun fetchWeatherAsync(
+        context: Context,
+        cityQuery: String?,
+        mode: ForecastMode = ForecastMode.NOW,
+        onResult: (String) -> Unit
+    ) {
         val appCtx = context.applicationContext
-        val targetCity = if (cityQuery.isNullOrBlank()) getSavedCity(appCtx) else cityQuery.trim()
+        val targetCity = when {
+            !cityQuery.isNullOrBlank() -> cityQuery.trim()
+            !ConversationContext.lastWeatherCity.isNullOrBlank() -> ConversationContext.lastWeatherCity!!
+            else -> getSavedCity(appCtx)
+        }
         executor.execute {
             val message = try {
-                loadWeatherBlocking(appCtx, targetCity)
+                loadWeatherBlocking(appCtx, targetCity, mode)
             } catch (_: Exception) {
-                "Не удалось получить погоду для города $targetCity. Проверьте подключение к интернету."
+                "Не удалось получить погоду для города $targetCity. Проверьте интернет."
             }
             mainHandler.post { onResult(message) }
         }
     }
 
-    private fun loadWeatherBlocking(context: Context, rawCity: String): String {
+    private fun loadWeatherBlocking(context: Context, rawCity: String, mode: ForecastMode): String {
         var resolvedName: String? = null
         var lat = 0.0
         var lon = 0.0
@@ -134,36 +150,72 @@ object WeatherClient {
         }
 
         val cityName = resolvedName
-            ?: return "Не удалось найти город $rawCity. Назовите город точнее, например: погода в Алматы."
+            ?: return "Не удалось найти город $rawCity. Назовите город точнее."
 
-        // Save resolved city so future "какая погода" uses it
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_CITY, cityName)
             .apply()
+        ConversationContext.lastWeatherCity = cityName
 
         val forecastUrl =
-            "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&wind_speed_unit=ms"
-        val weatherJson = httpGet(forecastUrl)
-            ?: return "Сервис погоды временно недоступен. Попробуйте чуть позже."
+            "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+                "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m" +
+                "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+                "&wind_speed_unit=ms&timezone=auto&forecast_days=2"
 
-        val current = JSONObject(weatherJson).getJSONObject("current")
+        val weatherJson = httpGet(forecastUrl)
+            ?: return "Сервис погоды временно недоступен."
+
+        val root = JSONObject(weatherJson)
+        val current = root.getJSONObject("current")
+        val daily = root.optJSONObject("daily")
+
+        if (mode == ForecastMode.TOMORROW && daily != null) {
+            val maxArr = daily.optJSONArray("temperature_2m_max")
+            val minArr = daily.optJSONArray("temperature_2m_min")
+            val codeArr = daily.optJSONArray("weather_code")
+            val probArr = daily.optJSONArray("precipitation_probability_max")
+            if (maxArr != null && maxArr.length() >= 2 && minArr != null && minArr.length() >= 2) {
+                val tMax = maxArr.getDouble(1).roundToInt()
+                val tMin = minArr.getDouble(1).roundToInt()
+                val wCode = codeArr?.optInt(1, 0) ?: 0
+                val precipProb = probArr?.optInt(1, 0) ?: 0
+                val cond = describeWeatherCode(wCode)
+                val rainHint = if (precipProb >= 40) " Вероятность осадков $precipProb%, лучше взять зонт." else ""
+                return "Завтра в городе $cityName днём до ${formatSignedTemp(tMax)}°, ночью ${formatSignedTemp(tMin)}°. $cond.$rainHint"
+            }
+        }
+
         val temp = current.getDouble("temperature_2m").roundToInt()
         val feels = current.getDouble("apparent_temperature").roundToInt()
         val code = current.optInt("weather_code", 0)
         val wind = current.optDouble("wind_speed_10m", 0.0).roundToInt()
+        val todayRainProb = daily?.optJSONArray("precipitation_probability_max")?.optInt(0, 0) ?: 0
+        val cond = describeWeatherCode(code)
 
-        val tempText = formatSignedTemp(temp)
-        val feelsText = formatSignedTemp(feels)
-        val condition = describeWeatherCode(code)
+        if (mode == ForecastMode.ADVICE) {
+            val clothes = when {
+                feels <= -15 -> "Очень морозно — надевайте тёплый пуховик, шапку и перчатки."
+                feels <= 0 -> "На улице минус — нужна зимняя куртка и шапка."
+                feels <= 10 -> "Довольно прохладно — наденьте куртку или пальто."
+                feels <= 18 -> "Свежо — подойдёт кофта, ветровка или лёгкая куртка."
+                feels <= 25 -> "Комфортная тёплая погода — можно идти налегке."
+                else -> "Жарко — одевайтесь максимально легко и берите воду."
+            }
+            val isWetCode = code in 51..99
+            val umbrella = when {
+                isWetCode -> "Сейчас идут осадки — обязательно берите зонт!"
+                todayRainProb >= 45 -> "Вероятность осадков сегодня $todayRainProb% — лучше захватить зонт."
+                else -> "Осадков не ожидается, зонт не нужен."
+            }
+            return "В городе $cityName сейчас ${formatSignedTemp(temp)}° (ощущается как ${formatSignedTemp(feels)}°), ${cond.lowercase(Locale("ru", "RU"))}. $clothes $umbrella"
+        }
 
-        return "Сейчас в городе $cityName $tempText градусов, ощущается как $feelsText. $condition, ветер $wind м/с."
+        return "Сейчас в городе $cityName ${formatSignedTemp(temp)} градусов, ощущается как ${formatSignedTemp(feels)}°. $cond, ветер $wind м/с."
     }
 
-    private fun formatSignedTemp(t: Int): String = when {
-        t > 0 -> "+$t"
-        else -> t.toString()
-    }
+    private fun formatSignedTemp(t: Int): String = if (t > 0) "+$t" else t.toString()
 
     private fun describeWeatherCode(code: Int): String = when (code) {
         0 -> "Ясно"

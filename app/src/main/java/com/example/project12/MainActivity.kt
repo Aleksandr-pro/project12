@@ -10,6 +10,8 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
@@ -37,6 +39,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnSendText: Button
     private lateinit var tvHistory: TextView
     private lateinit var btnClearHistory: Button
+    private lateinit var etFilterCommands: EditText
     private lateinit var tvCommandsGuide: TextView
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -45,6 +48,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var localCommandProcessor: CommandProcessor
     private var pendingActionAfterPermission: (() -> Unit)? = null
     private var waitingForSystemSpeechDialog = false
+    private lateinit var fullGuideSections: List<String>
 
     private val busListener: () -> Unit = {
         renderState()
@@ -67,6 +71,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         btnSendText = findViewById(R.id.btnSendText)
         tvHistory = findViewById(R.id.tvHistory)
         btnClearHistory = findViewById(R.id.btnClearHistory)
+        etFilterCommands = findViewById(R.id.etFilterCommands)
         tvCommandsGuide = findViewById(R.id.tvCommandsGuide)
 
         localTts = TextToSpeech(this, this)
@@ -118,8 +123,48 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             AssistantStateBus.clearHistory()
         }
 
-        tvCommandsGuide.text = buildCommandsReference()
+        fullGuideSections = buildGuideSections()
+        tvCommandsGuide.text = fullGuideSections.joinToString("\n\n")
+
+        etFilterCommands.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                filterCommandsGuide(s?.toString().orEmpty())
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+
         renderState()
+    }
+
+    private fun filterCommandsGuide(rawQuery: String) {
+        val q = rawQuery.trim().lowercase(Locale("ru", "RU")).replace('ё', 'е')
+        if (q.isEmpty()) {
+            tvCommandsGuide.text = fullGuideSections.joinToString("\n\n")
+            return
+        }
+        val matchedBlocks = fullGuideSections.mapNotNull { section ->
+            val lines = section.lines()
+            val header = lines.firstOrNull().orEmpty()
+            val headerMatches = header.lowercase(Locale("ru", "RU")).replace('ё', 'е').contains(q)
+            if (headerMatches) {
+                section
+            } else {
+                val matchingItems = lines.drop(1).filter {
+                    it.lowercase(Locale("ru", "RU")).replace('ё', 'е').contains(q)
+                }
+                if (matchingItems.isNotEmpty()) {
+                    (listOf(header) + matchingItems).joinToString("\n")
+                } else {
+                    null
+                }
+            }
+        }
+        tvCommandsGuide.text = if (matchedBlocks.isEmpty()) {
+            "По фильтру «$rawQuery» примеров не найдено — но вы всё равно можете сказать это своими словами, помощник поймёт контекст!"
+        } else {
+            matchedBlocks.joinToString("\n\n")
+        }
     }
 
     override fun onStart() {
@@ -132,7 +177,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         super.onResume()
         AssistantStateBus.setActiveActivity(this)
         if (waitingForSystemSpeechDialog) {
-            // Returned from dialog if onActivityResult already handled or failed
             waitingForSystemSpeechDialog = false
         }
     }
@@ -208,7 +252,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите команду (например: включи фонарик, погода)…")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите своими словами (например: тут темно, брать зонт?, курс доллара)…")
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             }
             try {
@@ -216,13 +260,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 startActivityForResult(speechIntent, REQ_SPEECH_ONCE)
             } catch (_: Exception) {
                 waitingForSystemSpeechDialog = false
-                // Fallback if ROM has no system speech dialog Activity
                 startAssistantService(action = VoiceAssistantService.ACTION_FORCE_LISTEN)
             }
         }
 
         if (AssistantStateBus.isServiceRunning) {
-            // Pause background recognizer first so the microphone isn't held by two sessions
             startAssistantService(action = VoiceAssistantService.ACTION_PAUSE_FOR_DIALOG)
             mainHandler.postDelayed(launchDialog, 200L)
         } else {
@@ -309,9 +351,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun updateModeHint(direct: Boolean) {
         tvModeDescription.text = if (direct) {
-            "ВКЛ: говорите команды сразу («включи фонарик», «погода», «таймер на 5 минут»)."
+            "ВКЛ: говорите сразу как человеку («тут темно», «брать зонт?», «а завтра?»)."
         } else {
-            "ВЫКЛ: начинайте со слова «Помощник» (например: «Помощник, включи фонарик»)."
+            "ВЫКЛ: начинайте со слова «Помощник» (уточняющие ответы понимает и без ключевого слова)."
         }
     }
 
@@ -338,9 +380,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val partial = AssistantStateBus.partialSpeech
         tvPartial.text = when {
             partial.isNotEmpty() -> "🎤 Слышу: «$partial»"
-            running && AssistantStateBus.isListeningNow -> "Говорите в микрофон — полоса выше покажет уровень голоса"
+            running && AssistantStateBus.isListeningNow -> "Говорите свободно — полоса выше показывает уровень вашего голоса"
             running -> "Обработка…"
-            else -> "Нажмите зелёную кнопку «🎤 Нажать и сказать команду» или включите постоянный режим"
+            else -> "Говорите своими словами без заучивания команд — нажмите зелёную кнопку 🎤"
         }
 
         val diag = AssistantStateBus.diagnosticInfo
@@ -360,7 +402,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (entries.isEmpty()) {
             tvHistory.text = "Пока нет выполненных команд."
         } else {
-            tvHistory.text = entries.take(10).joinToString("\n\n") { e ->
+            tvHistory.text = entries.take(12).joinToString("\n\n") { e ->
                 "[${e.time}] Вы: ${e.userText}\n🤖 ${e.assistantText}"
             }
         }
@@ -401,53 +443,86 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun buildCommandsReference(): String = """
-🔦 УПРАВЛЕНИЕ ТЕЛЕФОНОМ
-• «Включи фонарик» / «Выключи фонарик»
-• «Громче» / «Тише» / «Громкость на 50 процентов»
-• «Звук на максимум» / «Без звука» / «Включи звук»
-• «Сколько заряда» / «Батарея»
-• «Есть ли интернет» / «Какая модель телефона»
-
-⏰ БУДИЛЬНИКИ, ТАЙМЕРЫ, КАЛЕНДАРЬ
-• «Поставь будильник на 7:30» / «Разбуди меня в 8 утра»
-• «Покажи будильники» / «Секундомер»
-• «Поставь таймер на 5 минут» / «Засеки 30 секунд» / «Таймер на полчаса»
-• «Добавь в календарь встреча с врачом» / «Открой календарь»
-
-📱 ПРИЛОЖЕНИЯ, КАМЕРА И НАСТРОЙКИ
-• «Открой WhatsApp / Telegram / YouTube / Kaspi / 2ГИС / Instagram» (и любое другое приложение на телефоне!)
-• «Открой камеру» / «Сделай фото» / «Сними видео» / «Открой галерею»
-• «Открой калькулятор» / «Открой контакты» / «Открой браузер»
-• «Настройки Wi-Fi» / «Настройки Bluetooth» / «Настройки звука / экрана / геолокации»
-
-🌤 ПОГОДА, ПОИСК, КАРТЫ, ПЕРЕВОД
-• «Какая погода» / «Погода в Алматы» / «Мой город Актобе»
-• «Найди в интернете …» / «Загугли …» / «Что такое …»
-• «Википедия солнечная система»
-• «Включи на Ютубе музыку для работы» / «Включи песню …»
-• «Покажи на карте …» / «Маршрут до …» / «Ближайшая аптека / магазин / АЗС»
-• «Переведи на английский привет как дела»
-
-🧮 УСТНЫЙ СЧЁТ, ВРЕМЯ И ДАТА
-• «Сколько будет 25 умножить на 14» / «1500 разделить на 3»
-• «20 процентов от 4500» / «Корень из 144» / «5 в квадрате»
-• «Сколько времени» / «Какая сегодня дата» / «Какой завтра день недели»
-• «Сколько дней до Нового года»
-
-📝 ЗАМЕТКИ, ПОКУПКИ, ЗВОНКИ И СМС
-• «Запомни код домофона 42» / «Прочитай заметки» / «Очисти заметки»
-• «Добавь в список покупок молоко» / «Прочитай список покупок»
-• «Позвони на номер 87771234567» / «Напиши СМС скоро буду»
-• «Скопируй текст …» / «Поделись текстом …»
-
-🎲 РАЗВЛЕЧЕНИЯ И УПРАВЛЕНИЕ ПОМОЩНИКОМ
-• «Подбрось монетку» / «Брось кубик» / «Случайное число от 1 до 50»
-• «Расскажи анекдот» / «Интересный факт» / «Дай совет»
-• «Говори быстрее» / «Говори медленнее» / «Обычная скорость»
-• «Включи прямой режим» / «Включи режим ключевого слова»
-• «Замолчи» / «Останови помощника»
-    """.trimIndent()
+    private fun buildGuideSections(): List<String> = listOf(
+        """
+🧠 ПОНИМАНИЕ СВОИМИ СЛОВАМИ И КОНТЕКСТ (НЕ НУЖНО УЧИТЬ КОМАНДЫ!)
+• Ситуации из жизни: «Тут совсем темно / уронил под диван» → включит фонарик
+• «Слепит / свет дали» → выключит фонарик
+• «Я на совещании / дети спят / в кино» → выключит звук
+• «Слишком орёт / уши болят» → сделает потише; «Плохо слышно» → прибавит звук
+• «Брать зонт? / холодно на улице? / как одеться?» → проверит погоду и подскажет одежду
+• «Телефон садится? / доживёт до вечера?» → проверит батарею; «Телефон горячий» → температура
+• «Варить пельмени 8 минут / поставил духовку на 25 минут» → сам поставит таймер
+• «Мне завтра рано вставать в 6:40» → поставит будильник
+• «Хочу есть / хочу кофе / болит голова / кончается бензин / снять наличку» → найдёт рядом на карте
+• Память диалога: скажите «А завтра?», «А в Астане?», «Выключи», «Наоборот», «Ещё», «Повтори», «Плюс 150 / раздели пополам»!
+• Уточняющий диалог: если сказать просто «Поставь таймер» или «Запиши заметку» — сам переспросит детали!
+        """.trimIndent(),
+        """
+🔦 ФОНАРИК, ЗВУК, ПЛЕЕР И ВИБРАЦИЯ (18 команд)
+• «Включи / выключи фонарик», «Помигай фонариком», «Сигнал СОС»
+• «Проверь вибрацию / пожужжи»
+• «Громче», «Тише», «Громкость на 40 процентов», «На половину», «На максимум», «Без звука», «Включи звук»
+• «Какая сейчас громкость», «Звонок громче / тише», «Будильник громче / тише»
+• Управление плеером: «Пауза», «Продолжи музыку», «Следующий трек», «Предыдущий трек»
+        """.trimIndent(),
+        """
+📊 ПОЛНАЯ ДИАГНОСТИКА УСТРОЙСТВА (11 команд)
+• «Диагностика телефона / полный отчёт» (сводка всего устройства)
+• «Сколько заряда», «Температура батареи»
+• «Сколько свободной памяти / сколько гигабайт», «Оперативная память (ОЗУ)»
+• «Есть ли интернет / какая сеть», «Мой IP-адрес»
+• «Сколько работает без перезагрузки», «Модель телефона / версия Android», «Часовой пояс», «Язык системы»
+        """.trimIndent(),
+        """
+⏰ БУДИЛЬНИКИ, ТАЙМЕРЫ, ГОЛОСОВОЙ СЕКУНДОМЕР (12 команд)
+• «Поставь будильник на 7:30», «Разбуди через 40 минут», «Покажи будильники»
+• «Поставь таймер на 10 минут», «Засеки полторы минуты», «Покажи таймеры»
+• Встроенный секундомер: «Засеки время / запусти секундомер» → «Сколько прошло» → «Останови секундомер»
+• Голосовое напоминание: «Скажи через 30 секунд проверить чайник»
+• «Добавь в календарь встреча в 15:00», «Открой календарь»
+        """.trimIndent(),
+        """
+💱 ЖИВЫЕ КУРСЫ ВАЛЮТ, СЧЁТ, СКИДКИ И КОНВЕРТЕР ЕДИНИЦ (18 команд)
+• Валюты онлайн: «Курс доллара», «Курс евро», «Сколько будет 150 долларов в тенге», «25000 тенге в рублях», «Юани / лиры / дирхамы / фунты»
+• Финансы в быту: «Скидка 30 процентов от 14000», «Чаевые 10 процентов от 8500», «Раздели счёт 16000 на четверых»
+• Устный счёт + цепочка: «245 умножить на 18», а следом «Минус 15 процентов» или «Раздели на 3»!
+• «Корень из 225», «12 в квадрате», «5 в кубе», «2 в степени 10»
+• Конвертер: мили ↔ км, дюймы ↔ см, футы ↔ м, фунты ↔ кг, унции ↔ г, галлоны ↔ литры, Фаренгейты ↔ Цельсии, м/с ↔ км/ч
+        """.trimIndent(),
+        """
+🌤 ПОГОДА, МИРОВОЕ ВРЕМЯ И ДАТЫ (12 команд)
+• «Какая погода», «Погода завтра», «Погода в Алматы / Москве / Дубае», «Мой город Актобе»
+• «Сколько времени», «Сколько времени в Токио / Лондоне / Нью-Йорке / Астане / Москве» (25+ мировых столиц)
+• «Какая сегодня дата», «Какой послезавтра день недели», «Номер недели»
+• «Какое число будет через 45 дней», «Сколько дней до Нового года», «Сколько дней до лета»
+        """.trimIndent(),
+        """
+📝 ЗАМЕТКИ, СПИСОК ПОКУПОК, ЗАДАЧИ И ПАРОЛИ (15 команд)
+• Заметки: «Запомни парковка сектор Б4», «Прочитай заметки», «Найди в заметках парковка», «Удали заметку номер 2», «Очисти заметки»
+• Покупки: «Добавь в покупки хлеб и сыр», «Что нужно купить», «Вычеркни из покупок хлеб», «Очисти список покупок»
+• Задачи на день: «Добавь задачу позвонить в банк», «Мои задачи / список дел», «Очисти задачи»
+• Безопасность и буфер: «Сгенерируй надёжный пароль», «Придумай ПИН-код», «Скопируй текст …», «Поделись текстом …»
+        """.trimIndent(),
+        """
+📞 СВЯЗЬ, МЕССЕНДЖЕРЫ, КАРТЫ И 15 РАЗДЕЛОВ НАСТРОЕК (22 команды)
+• «Напиши в Ватсап скоро приеду», «Напиши в Телеграм привет», «Напиши СМС …», «Напиши письмо …»
+• «Позвони на номер …», «Создай контакт …», «Скорая помощь (103)», «Служба спасения (112)»
+• «Где я сейчас», «Маршрут до аэропорта», «Ближайшая аптека / кафе / кофейня / АЗС / банкомат / автомойка / шиномонтаж / стоматология / супермаркет»
+• «Открой любое приложение» (WhatsApp, Telegram, Kaspi, Halyk, 2ГИС, YouTube, Instagram, TikTok, Spotify и др.), «Установлен ли Kaspi»
+• «Сделай фото», «Сними видео», «Открой диктофон», «Открой загрузки», «Открой галерею»
+• Настройки: Wi-Fi, Bluetooth, точка доступа, NFC, звук, экран и яркость, энергосбережение, хранилище, безопасность, дата, геолокация, авиарежим, мобильная сеть, приложения
+        """.trimIndent(),
+        """
+🌍 ЭНЦИКЛОПЕДИЯ ВСЛУХ, ПЕРЕВОД И ГОЛОСОВЫЕ ИГРЫ (16 команд)
+• Свободные вопросы и Википедия вслух: «Кто такой Альберт Эйнштейн», «Что такое чёрная дыра», «Расскажи про Казахстан» (озвучит голосом!)
+• «Переведи на английский / казахский / немецкий / турецкий / китайский / испанский …» (12 языков)
+• «Последние новости», «Покажи картинки северного сияния», «Найди рецепт плова»
+• Интерактивные игры голосом: «Сыграем в города!», «Загадай загадку» (с подсказками и проверкой ответа!)
+• Выбор за вас: «Пицца или суши?», «Чай или кофе?», «Стоит ли идти гулять?»
+• «Подбрось монетку», «Брось два кубика», «Случайное число от 1 до 500», «Расскажи анекдот», «Интересный факт», «Дыхательное упражнение»
+        """.trimIndent()
+    )
 
     companion object {
         private const val REQ_PERMISSIONS = 1001

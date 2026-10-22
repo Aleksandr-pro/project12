@@ -181,7 +181,10 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         val (hadWakeWord, stripped) = commandProcessor.stripWakeWordPrefix(primary)
 
         if (!AssistantStateBus.directMode) {
-            val withinAwakeWindow = System.currentTimeMillis() < awakeUntilMillis
+            val interactiveDialogueActive = ConversationContext.peekPendingSlot() != null ||
+                ConversationContext.activeRiddle != null ||
+                ConversationContext.citiesGameActive
+            val withinAwakeWindow = System.currentTimeMillis() < awakeUntilMillis || interactiveDialogueActive
             if (!hadWakeWord && !withinAwakeWindow) {
                 if (!pausedForExternalDialog && !isSpeaking) {
                     speechEngine?.start()
@@ -190,12 +193,12 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
             }
             if (hadWakeWord && stripped.isEmpty()) {
                 awakeUntilMillis = System.currentTimeMillis() + 15_000L
-                val reply = "Слушаю вас, говорите команду."
+                val reply = "Слушаю вас, говорите своими словами."
                 AssistantStateBus.addDialogue(primary, reply)
                 speak(reply)
                 return
             }
-            awakeUntilMillis = System.currentTimeMillis() + 8_000L
+            awakeUntilMillis = System.currentTimeMillis() + 12_000L
             executeCandidateListDirectly(matches)
             return
         }
