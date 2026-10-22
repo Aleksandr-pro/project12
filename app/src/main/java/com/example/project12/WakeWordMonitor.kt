@@ -1,5 +1,6 @@
 package com.example.project12
 
+import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -11,6 +12,7 @@ class WakeWordMonitor(
     private val onWake: () -> Unit
 ) {
 
+    @Volatile
     private var isRunning = false
     private var thread: Thread? = null
 
@@ -19,8 +21,7 @@ class WakeWordMonitor(
         isRunning = true
         thread = Thread {
             runMonitoring()
-        }
-        thread?.start()
+        }.also { it.start() }
     }
 
     fun stopMonitoring() {
@@ -29,38 +30,71 @@ class WakeWordMonitor(
         thread = null
     }
 
+    @SuppressLint("MissingPermission")
     private fun runMonitoring() {
-        val bufferSize = AudioRecord.getMinBufferSize(
+        val minBuf = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(1024)
-
-        val recorder = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
         )
+        if (minBuf <= 0) {
+            isRunning = false
+            return
+        }
+        val bufferSize = minBuf.coerceAtLeast(2048)
 
-        recorder.startRecording()
+        val recorder = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
+        } catch (_: Exception) {
+            isRunning = false
+            return
+        }
+
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            recorder.release()
+            isRunning = false
+            return
+        }
+
+        var triggered = false
         val buffer = ShortArray(bufferSize / 2)
 
         try {
+            recorder.startRecording()
             while (isRunning && !Thread.currentThread().isInterrupted) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
                     val energy = calculateEnergy(buffer, read)
                     if (energy > energyThreshold) {
-                        onWake()
+                        triggered = true
                         break
                     }
                 }
             }
+        } catch (_: Exception) {
+            // Ignore interruption / stop exceptions
         } finally {
-            recorder.stop()
-            recorder.release()
+            isRunning = false
+            try {
+                if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    recorder.stop()
+                }
+            } catch (_: Exception) {
+            }
+            try {
+                recorder.release()
+            } catch (_: Exception) {
+            }
+        }
+
+        if (triggered) {
+            onWake()
         }
     }
 
