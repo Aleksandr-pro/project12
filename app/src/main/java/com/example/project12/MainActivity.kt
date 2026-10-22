@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.text.Editable
@@ -18,6 +19,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.ActivityCompat
@@ -35,6 +37,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnSpeakOnce: Button
     private lateinit var switchDirectMode: SwitchCompat
     private lateinit var tvModeDescription: TextView
+    private lateinit var tvScreenControlStatus: TextView
+    private lateinit var btnEnableScreenControl: Button
     private lateinit var etCommand: EditText
     private lateinit var btnSendText: Button
     private lateinit var tvHistory: TextView
@@ -67,6 +71,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         btnSpeakOnce = findViewById(R.id.btnSpeakOnce)
         switchDirectMode = findViewById(R.id.switchDirectMode)
         tvModeDescription = findViewById(R.id.tvModeDescription)
+        tvScreenControlStatus = findViewById(R.id.tvScreenControlStatus)
+        btnEnableScreenControl = findViewById(R.id.btnEnableScreenControl)
         etCommand = findViewById(R.id.etCommand)
         btnSendText = findViewById(R.id.btnSendText)
         tvHistory = findViewById(R.id.tvHistory)
@@ -123,6 +129,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             AssistantStateBus.clearHistory()
         }
 
+        btnEnableScreenControl.setOnClickListener {
+            Toast.makeText(
+                this,
+                "Найдите «Голосовой Помощник (Нелли)» в списке и включите переключатель!",
+                Toast.LENGTH_LONG
+            ).show()
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
+        }
+
+        updateScreenControlStatus()
+
         fullGuideSections = buildGuideSections()
         tvCommandsGuide.text = fullGuideSections.joinToString("\n\n")
 
@@ -176,8 +197,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onResume() {
         super.onResume()
         AssistantStateBus.setActiveActivity(this)
+        updateScreenControlStatus()
         if (waitingForSystemSpeechDialog) {
             waitingForSystemSpeechDialog = false
+        }
+    }
+
+    private fun updateScreenControlStatus() {
+        val enabled = NellyAccessibilityService.isEnabled(this)
+        if (enabled) {
+            tvScreenControlStatus.text = "✓ АКТИВНО: Нелли видит открытое приложение, сама жмёт «В путь / Продолжить маршрут» в 2ГИС и сама отправляет сообщения в WhatsApp и Telegram!"
+            tvScreenControlStatus.setTextColor(ContextCompat.getColor(this, R.color.statusRunning))
+            btnEnableScreenControl.text = "Настройки управления экраном (включено ✓)"
+        } else {
+            tvScreenControlStatus.text = "Нажмите кнопку ниже один раз, чтобы Нелли понимала открытое приложение, управляла внутри 2ГИС и сама нажимала кнопку «Отправить» в мессенджерах."
+            tvScreenControlStatus.setTextColor(ContextCompat.getColor(this, R.color.textSecondary))
+            btnEnableScreenControl.text = "⚡ Включить управление 2ГИС и авто-отправку"
         }
     }
 
@@ -402,21 +437,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (!hasMicPermission()) {
             needed.add(Manifest.permission.RECORD_AUDIO)
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED &&
-            !prefsPromptedContactsOnce()
-        ) {
-            needed.add(Manifest.permission.READ_CONTACTS)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED &&
-            !prefsPromptedContactsOnce()
-        ) {
-            needed.add(Manifest.permission.CALL_PHONE)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
-                !prefsPromptedContactsOnce()
-            ) {
-                needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (!prefsPromptedV40Once()) {
+            val extraPerms = mutableListOf(
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.SEND_SMS,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                extraPerms.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            for (p in extraPerms) {
+                if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                    needed.add(p)
+                }
             }
         }
 
@@ -425,17 +460,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        markPromptedContactsOnce()
+        markPromptedV40Once()
         pendingActionAfterPermission = onReady
         ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_PERMISSIONS)
     }
 
-    private fun prefsPromptedContactsOnce(): Boolean =
-        getSharedPreferences("assistant_prefs", MODE_PRIVATE).getBoolean("prompted_call_perms", false)
+    private fun prefsPromptedV40Once(): Boolean =
+        getSharedPreferences("assistant_prefs", MODE_PRIVATE).getBoolean("prompted_v40_perms", false)
 
-    private fun markPromptedContactsOnce() {
+    private fun markPromptedV40Once() {
         getSharedPreferences("assistant_prefs", MODE_PRIVATE).edit()
-            .putBoolean("prompted_call_perms", true)
+            .putBoolean("prompted_v40_perms", true)
             .apply()
     }
 
@@ -457,6 +492,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun buildGuideSections(): List<String> = listOf(
+        """
+🗺 УПРАВЛЕНИЕ 2ГИС, КООРДИНАТЫ, КРАТЧАЙШИЕ ПУТИ И РАБОТА В ОТКРЫТЫХ ПРИЛОЖЕНИЯХ (v4.0)
+• Кратчайшие маршруты в 2ГИС: «Проложи маршрут в 2ГИС до аэропорта», «Кратчайший путь до Керуен Сити», «Пеший маршрут до парка», «Маршрут на автобусе до вокзала»
+• Определение мест и расстояний: «Определи место улица Абая 15», «Сколько километров до вокзала», «Ближайшая аптека / заправка / банкомат / ЦОН»
+• Мои GPS-координаты и адрес: «Мои координаты», «Где я сейчас», «Какой тут адрес» (называет вслух и копирует в буфер!)
+• Отправка своих координат контакту: «Отправь мои координаты маме в Ватсап», «Скинь мою геолокацию Саше по СМС»
+• Понимание открытого приложения на экране:
+  — Открыли 2ГИС сами: скажите «Продолжи маршрут», «В путь», «Поехали», «Заверши маршрут», «Приблизь карту» или «Найди аптеку»!
+  — Открыли чат в WhatsApp / Telegram сами: скажите «Отправь скоро буду» или «Напиши сюда я уже выхожу» — Нелли сама введёт и нажмёт Отправить!
+  — В любом приложении: «Какое приложение открыто», «Что на экране», «Нажми кнопку …», «Листай вниз», «Следующее видео», «Шаг назад», «Домой»
+• Полная авто-отправка сообщений без рук: «Отправь СМС маме я дома» (уходит сразу в фоне!), «Напиши маме в Ватсап скоро приеду», «Напиши Саше в Телеграм привет»
+        """.trimIndent(),
         """
 📞 ЗВОНКИ КОНТАКТАМ И ЗАПУСК ПРИЛОЖЕНИЙ С ПОНИМАНИЕМ ПРОИЗНОШЕНИЯ
 • Звонки по имени из телефонной книги: «Позвони маме», «Набери папу», «Включи звонок Саше», «Позвони Арману»

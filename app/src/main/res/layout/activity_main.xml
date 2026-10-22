@@ -32,7 +32,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="Нелли v3.1 • Звонки контактам, умный запуск приложений и живой контекст"
+                android:text="Нелли v4.0 • 2ГИС, GPS-координаты, открытые приложения и авто-отправка"
                 android:textColor="@color/colorPrimary"
                 android:textSize="12.5sp"
                 android:textStyle="bold" />
@@ -52,7 +52,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="Скажите: «Позвони маме», «Включи Ватсап / Ютуб / Инстаграм / Телеграм»"
+                android:text="Скажите: «Маршрут в 2ГИС до аэропорта», «Продолжи маршрут», «Мои координаты», «Напиши маме в Ватсап скоро буду»"
                 android:textColor="@color/textPrimary"
                 android:textSize="14sp" />
 
@@ -106,9 +106,47 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="ВКЛ: говорите сразу («позвони маме», «включи инстаграм», «брать зонт?»)."
+                android:text="ВКЛ: говорите сразу («маршрут в 2ГИС до аэропорта», «мои координаты», «напиши маме в ватсап привет»)."
                 android:textColor="@color/textSecondary"
                 android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- 2GIS, Open-App Screen Control & Hands-Free Auto-Send Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Управление 2ГИС, открытыми приложениями и авто-отправка"
+                android:textColor="@color/textPrimary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvScreenControlStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Нужно включить один раз, чтобы Нелли понимала, какое приложение открыто, нажимала «В путь» в 2ГИС и сама отправляла сообщения в WhatsApp/Telegram."
+                android:textColor="@color/textSecondary"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnEnableScreenControl"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="#1565C0"
+                android:text="⚡ Включить управление 2ГИС и авто-отправку"
+                android:textAllCaps="false"
+                android:textColor="@color/white"
+                android:textSize="13.5sp" />
         </LinearLayout>
 
         <!-- Text Command Card -->

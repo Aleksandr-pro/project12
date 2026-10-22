@@ -5,13 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
+import android.telephony.SmsManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.Executors
 
 data class ContactPhoneItem(
     val displayName: String,
@@ -24,8 +27,8 @@ object ContactCaller {
 
     private val ruLocale = Locale("ru", "RU")
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val bgExecutor = Executors.newSingleThreadExecutor()
 
-    // Equivalence groups so "Саше" matches "Александр", "Маме" matches "Мамочка", etc.
     private val synonymGroups: List<Set<String>> = listOf(
         setOf("мама", "мам", "мамочка", "мамуля", "матушка", "мать"),
         setOf("папа", "пап", "папуля", "папочка", "батя", "отец"),
@@ -82,26 +85,149 @@ object ContactCaller {
         setOf("любовь", "люба")
     )
 
-    fun handleCallOrContactMessage(context: Context, lower: String, original: String): String? {
-        // 1. Check "напиши <Контакту> в ватсап <текст>"
-        val waContactMsg = Regex(
-            "^(?:напиши|отправь)\\s+(?:сообщение\\s+)?([а-яёa-z]+)\\s+в\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|whatsapp)\\s*(.*)$",
+    /**
+     * Handles voice calls AND hands-free automatic message sending (SMS, WhatsApp, Telegram, GPS share).
+     */
+    fun handleCallOrContactMessage(
+        context: Context,
+        lower: String,
+        original: String,
+        userDisplay: String,
+        onAsyncReply: (String, String) -> Unit
+    ): CommandResult? {
+
+        // 0. Share My GPS Coordinates directly to a Contact!
+        // e.g. "отправь мои координаты маме в ватсап", "скинь мою геолокацию Саше по смс", "отправь где я маме"
+        val shareLocMatch = Regex(
+            "^(?:отправь|скинь|пришли|передай)\\s+(?:мои координаты|мою геолокацию|мое местоположение|моё местоположение|где я)\\s+(.+)$",
             RegexOption.IGNORE_CASE
         ).find(original)
-        if (waContactMsg != null) {
-            val contactQuery = waContactMsg.groupValues[1].trim()
-            val textBody = waContactMsg.groupValues[2].trim()
-            return openWhatsAppForContact(context, contactQuery, textBody)
+        if (shareLocMatch != null) {
+            val rest = shareLocMatch.groupValues[1].trim()
+            val restLower = rest.lowercase(ruLocale).replace('ё', 'е')
+            val channel = when {
+                Regex("ватсап|вотсап|вацап|whatsapp").containsMatchIn(restLower) -> "WHATSAPP"
+                Regex("телеграм|тилеграм|телегу|telegram").containsMatchIn(restLower) -> "TELEGRAM"
+                else -> "SMS"
+            }
+            val contactName = rest
+                .replace(Regex("\\s*(?:в|по|через|на)\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|whatsapp|телеграм\\w*|тилеграм\\w*|телегу|telegram|смс|sms)\\s*", RegexOption.IGNORE_CASE), "")
+                .trim(' ', '.', ',', '!', '?')
+
+            bgExecutor.execute {
+                val locText = LocationAnd2GisEngine.buildMyLocationShareTextBlocking(context.applicationContext)
+                mainHandler.post {
+                    if (locText == null) {
+                        onAsyncReply(userDisplay, "Не удалось получить координаты GPS. Проверьте разрешение Геолокации.")
+                    } else {
+                        val sendReply = when (channel) {
+                            "WHATSAPP" -> sendWhatsAppToContactAuto(context, contactName, locText)
+                            "TELEGRAM" -> sendTelegramToContactAuto(context, contactName, locText)
+                            else -> sendSmsAuto(context, contactName, locText)
+                        }
+                        onAsyncReply(userDisplay, sendReply)
+                    }
+                }
+            }
+            return CommandResult(spokenResponse = "Определяю ваши координаты для отправки…", asyncPending = true)
         }
 
-        // 2. Check call phrasings:
-        // "позвони ...", "набери ...", "включи звонок ...", "включи вызов ...", "сделай звонок ...", "вызови ...", "звякни ..."
+        // 1. WhatsApp Auto-Send to Contact (supports BOTH word orders!):
+        // Order A: "напиши / отправь <Контакту> в ватсап <текст>"
+        val waOrderA = Regex(
+            "^(?:напиши|отправь|скинь|отошли)\\s+(?:сообщение\\s+)?([а-яёa-z]+)\\s+(?:в|по|на)\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|воцап\\w*|whatsapp)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (waOrderA != null) {
+            return CommandResult(
+                sendWhatsAppToContactAuto(context, waOrderA.groupValues[1].trim(), waOrderA.groupValues[2].trim())
+            )
+        }
+
+        // Order B: "напиши / отправь в ватсап <Контакту> <текст>"
+        val waOrderB = Regex(
+            "^(?:напиши|отправь|скинь|отошли)\\s+(?:сообщение\\s+)?(?:в|по|на)\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|воцап\\w*|whatsapp)\\s+([а-яёa-z]+)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (waOrderB != null) {
+            val firstWord = waOrderB.groupValues[1].trim()
+            val remainder = waOrderB.groupValues[2].trim()
+            // Check if firstWord matches a real contact in the user's phonebook!
+            val matchedContact = findContactIfGranted(context, firstWord)
+            if (matchedContact != null) {
+                return CommandResult(sendWhatsAppToResolvedContact(context, matchedContact, remainder))
+            }
+        }
+
+        // 2. Telegram Auto-Send to Contact (BOTH word orders!):
+        val tgOrderA = Regex(
+            "^(?:напиши|отправь|скинь|отошли)\\s+(?:сообщение\\s+)?([а-яёa-z]+)\\s+(?:в|по|на)\\s+(?:телеграм\\w*|тилеграм\\w*|телегу|телеге|telegram)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (tgOrderA != null) {
+            return CommandResult(
+                sendTelegramToContactAuto(context, tgOrderA.groupValues[1].trim(), tgOrderA.groupValues[2].trim())
+            )
+        }
+
+        val tgOrderB = Regex(
+            "^(?:напиши|отправь|скинь|отошли)\\s+(?:сообщение\\s+)?(?:в|по|на)\\s+(?:телеграм\\w*|тилеграм\\w*|телегу|телеге|telegram)\\s+([а-яёa-z]+)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (tgOrderB != null) {
+            val firstWord = tgOrderB.groupValues[1].trim()
+            val remainder = tgOrderB.groupValues[2].trim()
+            val matchedContact = findContactIfGranted(context, firstWord)
+            if (matchedContact != null) {
+                return CommandResult(sendTelegramToResolvedContact(context, matchedContact, remainder))
+            }
+        }
+
+        // 3. Direct Automatic SMS Sending ("отправь смс маме скоро буду", "напиши сообщение Саше привет")!
+        val smsToTargetMatch = Regex(
+            "^(?:отправь|напиши|скинь|пошли)\\s+(?:смс|смску|sms|сообщение)\\s+(?:на номер\\s+|абоненту\\s+|контакту\\s+)?([+0-9а-яёa-z]+)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (smsToTargetMatch != null) {
+            val recipient = smsToTargetMatch.groupValues[1].trim()
+            val msgBody = smsToTargetMatch.groupValues[2].trim()
+            // Avoid swallowing "напиши сообщение в ватсап ..."
+            if (recipient.lowercase(ruLocale) !in listOf("в", "на", "по", "через")) {
+                return CommandResult(sendSmsAuto(context, recipient, msgBody))
+            }
+        }
+
+        // Also "напиши маме скоро буду" / "отправь Саше я выхожу" (when NOT inside an open chat, defaults to WhatsApp if Accessibility is on, or SMS!)
+        val directPersonMsgMatch = Regex(
+            "^(?:напиши|отправь)\\s+([а-яё]{3,20})\\s+(?:что\\s+)?(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (directPersonMsgMatch != null) {
+            val candidatePerson = directPersonMsgMatch.groupValues[1].trim()
+            val body = directPersonMsgMatch.groupValues[2].trim()
+            val nonPersonWords = setOf(
+                "заметку", "список", "задачу", "текст", "письмо", "смс", "сообщение",
+                "сюда", "ответ", "комментарий", "в", "на", "по"
+            )
+            if (candidatePerson.lowercase(ruLocale) !in nonPersonWords && body.isNotEmpty()) {
+                val matchedContact = findContactIfGranted(context, candidatePerson)
+                if (matchedContact != null) {
+                    return if (NellyAccessibilityService.isEnabled(context)) {
+                        CommandResult(sendWhatsAppToResolvedContact(context, matchedContact, body))
+                    } else {
+                        CommandResult(sendSmsToResolvedNumber(context, matchedContact.number, matchedContact.displayName, body))
+                    }
+                }
+            }
+        }
+
+        // 4. Voice Call Phrasings:
         val isBareCallTrigger = lower in listOf(
             "позвони", "позвонить", "набери", "набрать", "включи звонок", "сделай звонок", "включи вызов", "позвони контакту"
         )
         if (isBareCallTrigger) {
             ConversationContext.setPendingSlot(PendingSlot.CALL_TARGET)
-            return "Кому позвонить? Назовите имя контакта или номер телефона."
+            return CommandResult("Кому позвонить? Назовите имя контакта или номер телефона.")
         }
 
         val callMatch = Regex(
@@ -116,7 +242,7 @@ object ContactCaller {
 
         if (targetRaw.isEmpty()) {
             ConversationContext.setPendingSlot(PendingSlot.CALL_TARGET)
-            return "Кому позвонить? Скажите имя из телефонной книги или номер."
+            return CommandResult("Кому позвонить? Скажите имя из телефонной книги или номер.")
         }
 
         val viaWhatsApp = Regex("\\s+(?:по|в|через)\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|whatsapp)$", RegexOption.IGNORE_CASE)
@@ -126,56 +252,118 @@ object ContactCaller {
                 Regex("\\s+(?:по|в|через)\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|whatsapp)$", RegexOption.IGNORE_CASE),
                 ""
             ).trim()
-            return openWhatsAppForContact(context, targetRaw, "")
+            return CommandResult(openWhatsAppChatCard(context, targetRaw))
         }
 
-        return placeCallToTarget(context, targetRaw)
+        return CommandResult(placeCallToTarget(context, targetRaw))
     }
 
-    fun placeCallToTarget(context: Context, targetRaw: String): String {
-        // Check if target is a phone number (digits or spoken numbers like "8 777 ...")
-        val normalizedDigitsCandidate = RussianNumberParser.normalizeNumbersAndTime(targetRaw)
-        val digitsOnly = normalizedDigitsCandidate.filter { it.isDigit() || it == '+' }
-        val lettersOnly = targetRaw.filter { it.isLetter() }
-
-        if (digitsOnly.length >= 5 && lettersOnly.length <= 3) {
-            return initiatePhoneCall(context, digitsOnly, displayLabel = digitsOnly)
+    fun sendSmsAuto(context: Context, recipientRaw: String, messageBody: String): String {
+        val digitsCandidate = recipientRaw.filter { it.isDigit() || it == '+' }
+        if (digitsCandidate.length >= 5) {
+            return sendSmsToResolvedNumber(context, digitsCandidate, digitsCandidate, messageBody)
         }
 
-        // Otherwise resolve contact by name in Android Contacts!
         if (!hasReadContactsPermission(context)) {
-            requestCallAndContactPermissionsIfPossible()
-            return "Чтобы я могла звонить контактам по имени, разрешите доступ к Контактам и Телефону в появившемся окне, и повторите команду!"
+            requestCallSmsAndContactPermissionsIfPossible()
+            return "Разрешите доступ к Контактам и СМС на экране, чтобы я сама отправляла сообщения по имени!"
         }
 
         val contacts = loadAllContacts(context)
-        if (contacts.isEmpty()) {
-            return "В телефонной книге пока нет сохранённых контактов с номерами."
-        }
+        val match = findBestMatchingContact(recipientRaw, contacts)
+            ?: return "Контакт «$recipientRaw» не найден в телефонной книге."
 
-        val bestMatch = findBestMatchingContact(targetRaw, contacts)
-        if (bestMatch == null) {
-            return "Я не нашла контакт «$targetRaw» в вашей телефонной книге. Попробуйте назвать имя так, как оно записано в контактах."
-        }
-
-        return initiatePhoneCall(context, bestMatch.number, displayLabel = bestMatch.displayName)
+        return sendSmsToResolvedNumber(context, match.number, match.displayName, messageBody)
     }
 
-    private fun openWhatsAppForContact(context: Context, contactQuery: String, message: String): String {
+    @Suppress("DEPRECATION")
+    private fun sendSmsToResolvedNumber(
+        context: Context,
+        rawNumber: String,
+        displayLabel: String,
+        messageBody: String
+    ): String {
+        val cleanPhone = rawNumber.filter { it.isDigit() || it == '+' }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED) {
+            return try {
+                val smsManager: SmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    context.getSystemService(SmsManager::class.java) ?: SmsManager.getDefault()
+                } else {
+                    SmsManager.getDefault()
+                }
+                val parts = smsManager.divideMessage(messageBody)
+                if (parts.size > 1) {
+                    smsManager.sendMultipartTextMessage(cleanPhone, null, parts, null, null)
+                } else {
+                    smsManager.sendTextMessage(cleanPhone, null, messageBody, null, null)
+                }
+                "СМС для $displayLabel отправлено автоматически: «$messageBody»."
+            } catch (e: Exception) {
+                fallbackSmsUiWithAutoClick(context, cleanPhone, displayLabel, messageBody)
+            }
+        } else {
+            requestCallSmsAndContactPermissionsIfPossible()
+            return fallbackSmsUiWithAutoClick(context, cleanPhone, displayLabel, messageBody)
+        }
+    }
+
+    private fun fallbackSmsUiWithAutoClick(
+        context: Context,
+        cleanPhone: String,
+        displayLabel: String,
+        messageBody: String
+    ): String {
+        NellyAccessibilityService.scheduleAutoSend(
+            targetPackages = emptySet(),
+            messageText = messageBody,
+            needsTextInjection = false
+        )
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$cleanPhone")).apply {
+            putExtra("sms_body", messageBody)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            context.startActivity(intent)
+            if (NellyAccessibilityService.isEnabled(context)) {
+                "Отправляю СМС для $displayLabel…"
+            } else {
+                "Разрешите отправку СМС на экране, чтобы я отправляла их полностью сама без открытия окна!"
+            }
+        } catch (_: Exception) {
+            "Не удалось отправить СМС."
+        }
+    }
+
+    fun sendWhatsAppToContactAuto(context: Context, contactQuery: String, message: String): String {
         if (!hasReadContactsPermission(context)) {
-            requestCallAndContactPermissionsIfPossible()
-            return "Разрешите доступ к контактам на экране, чтобы я нашла номер «$contactQuery» для WhatsApp."
+            requestCallSmsAndContactPermissionsIfPossible()
+            return "Разрешите доступ к контактам на экране, чтобы я нашла номер «$contactQuery» для отправки в WhatsApp."
         }
         val contacts = loadAllContacts(context)
         val match = findBestMatchingContact(contactQuery, contacts)
             ?: return "Контакт «$contactQuery» не найден в телефонной книге."
 
-        val intlDigits = normalizeInternationalPhoneForWa(match.number)
+        return sendWhatsAppToResolvedContact(context, match, message)
+    }
+
+    private fun sendWhatsAppToResolvedContact(
+        context: Context,
+        match: ContactPhoneItem,
+        message: String
+    ): String {
+        val intlDigits = normalizeInternationalPhone(match.number)
         if (intlDigits.length < 7) {
             return "У контакта ${match.displayName} некорректный номер для WhatsApp."
         }
-        val textParam = if (message.isNotEmpty()) "?text=${URLEncoder.encode(message, "UTF-8")}" else ""
-        val uri = Uri.parse("https://wa.me/$intlDigits$textParam")
+
+        // Schedule AccessibilityService to automatically click WhatsApp's Send button as soon as chat opens!
+        NellyAccessibilityService.scheduleAutoSend(
+            targetPackages = setOf("com.whatsapp", "com.whatsapp.w4b"),
+            messageText = message,
+            needsTextInjection = false
+        )
+
+        val uri = Uri.parse("https://wa.me/$intlDigits?text=${URLEncoder.encode(message, "UTF-8")}")
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             setPackage("com.whatsapp")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -191,16 +379,118 @@ object ContactCaller {
                 false
             }
         }
-        return if (started) {
-            "Открываю WhatsApp с контактом ${match.displayName}."
+
+        if (!started) return "Не удалось открыть WhatsApp."
+
+        return if (NellyAccessibilityService.isEnabled(context)) {
+            "Отправляю в WhatsApp контакту ${match.displayName}: «$message»!"
         } else {
+            "Открыла чат с ${match.displayName}. Включите управление экраном для Нелли на главном экране, чтобы я сама нажимала кнопку Отправить!"
+        }
+    }
+
+    fun sendTelegramToContactAuto(context: Context, contactQuery: String, message: String): String {
+        if (!hasReadContactsPermission(context)) {
+            requestCallSmsAndContactPermissionsIfPossible()
+            return "Разрешите доступ к контактам на экране, чтобы я нашла номер «$contactQuery» для Telegram."
+        }
+        val contacts = loadAllContacts(context)
+        val match = findBestMatchingContact(contactQuery, contacts)
+            ?: return "Контакт «$contactQuery» не найден в телефонной книге."
+
+        return sendTelegramToResolvedContact(context, match, message)
+    }
+
+    private fun sendTelegramToResolvedContact(
+        context: Context,
+        match: ContactPhoneItem,
+        message: String
+    ): String {
+        val intlDigits = normalizeInternationalPhone(match.number)
+        if (intlDigits.length < 7) {
+            return "У контакта ${match.displayName} некорректный номер для Telegram."
+        }
+
+        NellyAccessibilityService.scheduleAutoSend(
+            targetPackages = setOf("org.telegram.messenger", "org.telegram.messenger.web", "org.thunderdog.challegram"),
+            messageText = message,
+            needsTextInjection = true
+        )
+
+        val tgUri = Uri.parse("tg://resolve?phone=$intlDigits")
+        val intent = Intent(Intent.ACTION_VIEW, tgUri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val started = try {
+            context.startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+
+        if (!started) return "Приложение Telegram не установлено."
+
+        return if (NellyAccessibilityService.isEnabled(context)) {
+            "Отправляю в Telegram контакту ${match.displayName}: «$message»!"
+        } else {
+            "Открыла чат Telegram с ${match.displayName}. Включите управление экраном на главном экране, чтобы я сама отправляла текст!"
+        }
+    }
+
+    private fun openWhatsAppChatCard(context: Context, contactQuery: String): String {
+        if (!hasReadContactsPermission(context)) {
+            requestCallSmsAndContactPermissionsIfPossible()
+            return "Разрешите доступ к контактам на экране."
+        }
+        val match = findBestMatchingContact(contactQuery, loadAllContacts(context))
+            ?: return "Контакт «$contactQuery» не найден."
+        val intlDigits = normalizeInternationalPhone(match.number)
+        val uri = Uri.parse("https://wa.me/$intlDigits")
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+            setPackage("com.whatsapp")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            context.startActivity(intent)
+            "Открываю контакт ${match.displayName} в WhatsApp."
+        } catch (_: Exception) {
             "Не удалось открыть WhatsApp."
         }
     }
 
-    private fun normalizeInternationalPhoneForWa(rawPhone: String): String {
+    fun placeCallToTarget(context: Context, targetRaw: String): String {
+        val normalizedDigitsCandidate = RussianNumberParser.normalizeNumbersAndTime(targetRaw)
+        val digitsOnly = normalizedDigitsCandidate.filter { it.isDigit() || it == '+' }
+        val lettersOnly = targetRaw.filter { it.isLetter() }
+
+        if (digitsOnly.length >= 5 && lettersOnly.length <= 3) {
+            return initiatePhoneCall(context, digitsOnly, displayLabel = digitsOnly)
+        }
+
+        if (!hasReadContactsPermission(context)) {
+            requestCallSmsAndContactPermissionsIfPossible()
+            return "Чтобы я могла звонить контактам по имени, разрешите доступ к Контактам и Телефону в появившемся окне!"
+        }
+
+        val contacts = loadAllContacts(context)
+        if (contacts.isEmpty()) {
+            return "В телефонной книге пока нет сохранённых контактов с номерами."
+        }
+
+        val bestMatch = findBestMatchingContact(targetRaw, contacts)
+            ?: return "Я не нашла контакт «$targetRaw» в вашей телефонной книге."
+
+        return initiatePhoneCall(context, bestMatch.number, displayLabel = bestMatch.displayName)
+    }
+
+    private fun findContactIfGranted(context: Context, query: String): ContactPhoneItem? {
+        if (!hasReadContactsPermission(context)) return null
+        val contacts = loadAllContacts(context)
+        return findBestMatchingContact(query, contacts)
+    }
+
+    private fun normalizeInternationalPhone(rawPhone: String): String {
         val digits = rawPhone.filter { it.isDigit() }
-        // Convert local 87... / 89... (11 digits KZ/RU) to 77... / 79...
         return if (digits.length == 11 && digits.startsWith("8")) {
             "7" + digits.substring(1)
         } else {
@@ -216,7 +506,6 @@ object ContactCaller {
         ConversationContext.lastAction = "CALL"
 
         if (canDirectCall) {
-            // Brief 850ms delay so Nelly's voice confirmation ("Звоню: Мама") is heard before cellular call grabs audio focus
             mainHandler.postDelayed({
                 val callIntent = Intent(Intent.ACTION_CALL, encodedTel).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -235,13 +524,13 @@ object ContactCaller {
             }, 850L)
             return "Звоню: $displayLabel."
         } else {
-            requestCallAndContactPermissionsIfPossible()
+            requestCallSmsAndContactPermissionsIfPossible()
             val dialIntent = Intent(Intent.ACTION_DIAL, encodedTel).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             return try {
                 context.startActivity(dialIntent)
-                "Набрала номер контакта $displayLabel — нажмите кнопку вызова (или разрешите прямые звонки)."
+                "Набрала номер контакта $displayLabel — нажмите кнопку вызова."
             } catch (_: Exception) {
                 "Не удалось запустить звонок для $displayLabel."
             }
@@ -298,17 +587,14 @@ object ContactCaller {
             val contactTokens = contactNorm.split(" ").filter { it.isNotEmpty() }
             if (contactTokens.isEmpty()) continue
 
-            // Full string similarity
             var score = PhoneticSimilarity.wordSimilarity(queryNorm, contactNorm)
 
-            // Token-level similarity (handles "позвони Саше" -> "Саша Работа" or "Александр Иванов")
             var tokenSum = 0.0
             for (qt in queryTokens) {
                 val qtSynonyms = expandNameSynonyms(qt)
                 var bestForToken = 0.0
                 for (ct in contactTokens) {
                     val ctSynonyms = expandNameSynonyms(ct)
-                    // Direct synonym match (e.g. "саше" -> stem "саш" -> synonym group matches "александр"!)
                     val synOverlap = qtSynonyms.intersect(ctSynonyms).isNotEmpty()
                     val pairScore = if (synOverlap) {
                         0.96
@@ -321,7 +607,6 @@ object ContactCaller {
             }
 
             val avgTokenScore = tokenSum / queryTokens.size.toDouble()
-            // Slightly reward exact multi-token match when contact has multiple words
             val multiBonus = if (queryTokens.size >= 2 && contactTokens.size >= 2) 0.03 else 0.0
             val combinedTokenScore = (avgTokenScore + multiBonus).coerceAtMost(1.0)
 
@@ -329,7 +614,6 @@ object ContactCaller {
                 score = combinedTokenScore
             }
 
-            // Tie-breakers: prefer starred contacts & mobile phone numbers
             if (item.starred) score += 0.015
             if (item.isMobile) score += 0.008
 
@@ -361,7 +645,7 @@ object ContactCaller {
     private fun hasReadContactsPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
 
-    private fun requestCallAndContactPermissionsIfPossible() {
+    private fun requestCallSmsAndContactPermissionsIfPossible() {
         val act = AssistantStateBus.getActiveActivity() ?: return
         mainHandler.post {
             val perms = mutableListOf<String>()
@@ -370,6 +654,9 @@ object ContactCaller {
             }
             if (ContextCompat.checkSelfPermission(act, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
                 perms.add(Manifest.permission.CALL_PHONE)
+            }
+            if (ContextCompat.checkSelfPermission(act, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                perms.add(Manifest.permission.SEND_SMS)
             }
             if (perms.isNotEmpty()) {
                 ActivityCompat.requestPermissions(act, perms.toTypedArray(), 1005)
