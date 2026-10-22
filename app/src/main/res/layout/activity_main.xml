@@ -1,40 +1,211 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center">
+    android:background="@color/bgScreen"
+    android:fillViewport="true">
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/status_stopped"
-        android:textColor="@color/statusStopped"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="32dp" />
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <Button
-        android:id="@+id/btnToggle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/btn_start"
-        android:textSize="18sp"
-        android:paddingHorizontal="32dp"
-        android:paddingVertical="16dp" />
+        <!-- Status & Primary Controls Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
 
-    <TextView
-        android:id="@+id/tvHint"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Говорите «Помощник» для активации, затем произносите команду."
-        android:textSize="14sp"
-        android:textColor="#666666"
-        android:layout_marginTop="32dp"
-        android:gravity="center"
-        android:maxWidth="260dp" />
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/status_stopped"
+                android:textColor="@color/statusStopped"
+                android:textSize="17sp"
+                android:textStyle="bold" />
 
-</LinearLayout>
+            <TextView
+                android:id="@+id/tvPartial"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="Нажмите запуск или кнопку микрофона ниже"
+                android:textColor="@color/textSecondary"
+                android:textSize="14sp"
+                android:textStyle="italic" />
+
+            <Button
+                android:id="@+id/btnToggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:backgroundTint="@color/colorPrimary"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:text="@string/btn_start"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <Button
+                android:id="@+id/btnSpeakOnce"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="@color/colorAccent"
+                android:paddingTop="11dp"
+                android:paddingBottom="11dp"
+                android:text="@string/btn_speak_once"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switchDirectMode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:checked="true"
+                android:text="Прямое распознавание (без слова «Помощник»)"
+                android:textColor="@color/textPrimary"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/tvModeDescription"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="ВКЛ: говорите команды сразу («включи фонарик», «погода», «таймер на 5 минут»)."
+                android:textColor="@color/textSecondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- Text Command Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Быстрая проверка команды текстом"
+                android:textColor="@color/textPrimary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/etCommand"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Например: сколько будет 25 * 14"
+                    android:imeOptions="actionSend"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:textColor="@color/textPrimary"
+                    android:textSize="14sp" />
+
+                <Button
+                    android:id="@+id/btnSendText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="▶"
+                    android:textAllCaps="false" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Dialogue History Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="История команд и ответов"
+                    android:textColor="@color/textPrimary"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnClearHistory"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:minHeight="0dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="Очистить"
+                    android:textAllCaps="false"
+                    android:textColor="@color/colorPrimary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvHistory"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:lineSpacingExtra="3dp"
+                android:text="Пока нет выполненных команд."
+                android:textColor="@color/textSecondary"
+                android:textSize="13.5sp" />
+        </LinearLayout>
+
+        <!-- Full Commands Guide Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Доступные голосовые команды"
+                android:textColor="@color/textPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvCommandsGuide"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:lineSpacingExtra="3dp"
+                android:textColor="@color/textSecondary"
+                android:textSize="13.5sp" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>
