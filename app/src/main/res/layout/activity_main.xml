@@ -145,7 +145,7 @@
                 android:backgroundTint="#1565C0"
                 android:text="⚡ Включить управление 2ГИС и авто-отправку"
                 android:textAllCaps="false"
-                android:textColor="@color/white"
+                android:textColor="@android:color/white"
                 android:textSize="13.5sp" />
         </LinearLayout>
 
