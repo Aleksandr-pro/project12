@@ -8,9 +8,10 @@
     <string name="status_running">Нелли слушает — говорите…</string>
     <string name="notification_channel_id">voice_assistant_channel</string>
     <string name="notification_channel_name">Голосовая помощница Нелли</string>
-    <string name="notification_channel_description">Фоновое распознавание речи и голосовые ответы Нелли</string>
+    <string name="notification_channel_description">Фоновое распознавание речи и управление 2ГИС / мессенджерами</string>
     <string name="notification_title">Помощница Нелли активна</string>
-    <string name="notification_text">Слушаю голосовые команды и звонки</string>
+    <string name="notification_text">Слушаю команды, 2ГИС и сообщения</string>
+    <string name="accessibility_service_description">Позволяет помощнице Нелли понимать, какое приложение сейчас открыто (например, 2ГИС, WhatsApp, Telegram, YouTube), нажимать кнопки («В путь», «Продолжить маршрут», «Отправить») и отправлять сообщения голосом без касания экрана.</string>
     <string name="msg_listening">Слушаю…</string>
     <string name="msg_speaking">Говорю…</string>
     <string name="error_permissions">Разрешите доступ к микрофону в настройках</string>

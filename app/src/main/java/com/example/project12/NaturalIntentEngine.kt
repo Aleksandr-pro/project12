@@ -184,6 +184,8 @@ object NaturalIntentEngine {
                     PendingSlot.TRANSLATE_PHRASE -> "переведи $extra $trimmed".trim()
                     PendingSlot.OPEN_APP_NAME -> "открой $trimmed"
                     PendingSlot.CALL_TARGET -> "позвони $trimmed"
+                    PendingSlot.ROUTE_DESTINATION -> "маршрут в 2гис до $trimmed"
+                    PendingSlot.MESSAGE_BODY -> "$extra $trimmed".trim()
                 }
                 return ContextualResolution.RewrittenCommand(rewritten)
             }
@@ -260,6 +262,20 @@ object NaturalIntentEngine {
             }
             if (ConversationContext.lastAction == "WORLD_TIME") {
                 return ContextualResolution.RewrittenCommand("сколько времени в $place")
+            }
+        }
+
+        // 10. Contextual follow-ups after Route / Place Info ("а пешком?", "а на автобусе?", "а на такси?")
+        if (ConversationContext.lastRouteDestLat != null && !ConversationContext.lastRouteDestName.isNullOrBlank()) {
+            val dest = ConversationContext.lastRouteDestName!!
+            if (lower in listOf("а пешком", "пешком", "пеший маршрут", "как дойти пешком")) {
+                return ContextualResolution.RewrittenCommand("пеший маршрут в 2гис до $dest")
+            }
+            if (lower in listOf("а на автобусе", "на автобусе", "на общественном транспорте", "общественным транспортом")) {
+                return ContextualResolution.RewrittenCommand("маршрут на автобусе в 2гис до $dest")
+            }
+            if (lower in listOf("а на такси", "на такси")) {
+                return ContextualResolution.RewrittenCommand("маршрут на такси в 2гис до $dest")
             }
         }
 

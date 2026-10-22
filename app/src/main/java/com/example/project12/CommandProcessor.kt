@@ -1,5 +1,6 @@
 package com.example.project12
 
+import android.accessibilityservice.AccessibilityService
 import android.app.ActivityManager
 import android.app.DownloadManager
 import android.content.ClipData
@@ -224,6 +225,9 @@ class CommandProcessor(
             return CommandResult(spokenResponse = "Возвращаю обычную скорость речи.", speechRate = 1.0f)
         }
 
+        // 1B. Active Open-App Awareness & UI Automation (2GIS "продолжи маршрут", open chat auto-send, button clicks, screen info)
+        handleOpenAppAndScreenControl(lower, original, originalUserDisplay)?.let { return it }
+
         // 2. Flashlight (ON / OFF / Blink / SOS)
         if (lower.contains("помигай фонар") || lower.contains("мигни фонар") ||
             lower.contains("сигнал сос") || lower.contains("стробоскоп")
@@ -272,10 +276,13 @@ class CommandProcessor(
         // 11. Time (Local + World Cities), Date, Calendar math, Week number, Countdown to holidays
         handleTimeAndDateCommands(lower, original)?.let { return CommandResult(it) }
 
-        // 12. Calls, Emergency Numbers, Contacts, SMS, WhatsApp/Telegram message, Email
-        handleCommunicationCommands(lower, original)?.let { return CommandResult(it) }
+        // 12. Calls, Emergency Numbers, Contacts, Hands-Free Auto-Send SMS / WhatsApp / Telegram / Share GPS
+        handleCommunicationCommands(lower, original, originalUserDisplay)?.let { return it }
 
-        // 13. Camera (Photo / Video), Voice Recorder, Downloads
+        // 13. GPS Coordinates, Place Recognition, Shortest Paths & Full 2GIS Route Control
+        handle2GisAndLocationCommands(lower, original, originalUserDisplay)?.let { return it }
+
+        // 14. Camera (Photo / Video), Voice Recorder, Downloads
         if (lower.contains("сделай фото") || lower.contains("сфотографируй") || lower.contains("сфоткай") ||
             lower.contains("открой камер") || lower == "камера" || lower == "селфи"
         ) {
@@ -293,17 +300,14 @@ class CommandProcessor(
             return CommandResult(if (safeStart(intent)) "Открываю папку загрузок." else "Не удалось открыть загрузки.")
         }
 
-        // 14. YouTube Video/Song Search (only when searching a specific video/song)
+        // 15. YouTube Video/Song Search (only when searching a specific video/song)
         handleYouTubeOrMusic(lower, original)?.let { return CommandResult(it) }
 
-        // 15. Pronunciation-Tolerant App Launcher (YouTube, WhatsApp, Telegram, Instagram, Kaspi, 2GIS, or ANY installed app!)
+        // 16. Pronunciation-Tolerant App Launcher (YouTube, WhatsApp, Telegram, Instagram, Kaspi, 2GIS, or ANY installed app!)
         AppLauncherEngine.tryLaunchFromUtterance(context, lower, original)?.let { return CommandResult(it) }
 
-        // 16. System Settings (15 sections)
+        // 17. System Settings (15 sections)
         handleSettingsCommand(lower)?.let { return CommandResult(it) }
-
-        // 17. Maps, Navigation & 20+ Nearby Place types
-        handleMapsCommand(lower, original)?.let { return CommandResult(it) }
 
         // 18. Translator (12 languages + slot filling if phrase omitted)
         handleTranslateCommand(lower, original)?.let { return CommandResult(it) }
@@ -323,7 +327,7 @@ class CommandProcessor(
             lower.contains("чему ты научилась") || lower.contains("чему ты научился")
         ) {
             return CommandResult(
-                "Меня зовут Нелли! Я понимаю более ста действий и живую речь без шаблонов: звоню вашим контактам по имени («позвони маме», «включи звонок Саше»), открываю Ютуб, Ватсап, Телеграм, Инстаграм и любые приложения на телефоне даже при неточном произношении, считаю валюты и отвечаю на вопросы."
+                "Меня зовут Нелли! Я определяю ваши координаты и адрес, нахожу места и прокладываю кратчайшие маршруты в 2ГИС, понимаю какое приложение сейчас открыто на экране (например, могу продолжить маршрут в 2ГИС или отправить текст прямо в открытом чате), а также сама отправляю СМС и сообщения в WhatsApp и Telegram без нажатий руками!"
             )
         }
 
@@ -1177,15 +1181,195 @@ class CommandProcessor(
         return null
     }
 
-    private fun handleCommunicationCommands(lower: String, original: String): String? {
-        // Emergency numbers dial screen (safe ACTION_DIAL, never auto-calls without user confirmation)
+    private fun handleOpenAppAndScreenControl(
+        lower: String,
+        original: String,
+        userDisplay: String
+    ): CommandResult? {
+        val ownPkg = context.packageName
+
+        // 1. "Какое приложение открыто?" / "Что на экране?"
+        if (lower.contains("какое приложение открыто") || lower.contains("какое сейчас приложение") ||
+            lower.contains("в каком я приложении") || lower.contains("что сейчас открыто") ||
+            lower.contains("что на экране") || lower == "прочитай экран" || lower == "что открыто"
+        ) {
+            return CommandResult(NellyAccessibilityService.describeCurrentScreen(context))
+        }
+
+        // 2. 2ГИС / Navigator: Continue or Start Route ("продолжи маршрут", "поехали", "в путь", "начни ведение")
+        val isExplicitContinueRoute = lower in listOf(
+            "продолжи маршрут", "продолжить маршрут", "продолжай маршрут",
+            "поехали", "в путь", "начни маршрут", "начни ведение",
+            "запусти маршрут", "старт маршрута", "веди по маршруту", "веди меня"
+        ) || (NellyAccessibilityService.is2GisActiveOrRecent(ownPkg) && lower in listOf("продолжи", "продолжить", "веди", "старт"))
+
+        if (isExplicitContinueRoute) {
+            if (NellyAccessibilityService.isEnabled(context) && NellyAccessibilityService.isNavigatorActiveOrRecent(ownPkg)) {
+                val (ok, uiMsg) = NellyAccessibilityService.perform2GisAction(TwoGisUiAction.START_OR_CONTINUE)
+                if (ok) return CommandResult(uiMsg)
+            }
+
+            // If we have a remembered destination in ConversationContext, launch/resume it in 2GIS & auto-start!
+            val destLat = ConversationContext.lastRouteDestLat
+            val destLon = ConversationContext.lastRouteDestLon
+            val destName = ConversationContext.lastRouteDestName
+            if (destLat != null && destLon != null) {
+                val myLoc = LocationAnd2GisEngine.getBestLocationBlocking(context.applicationContext, maxWaitMs = 1200L)
+                val opened = LocationAnd2GisEngine.open2GisRouteUri(
+                    context = context,
+                    fromLat = myLoc?.latitude,
+                    fromLon = myLoc?.longitude,
+                    toLat = destLat,
+                    toLon = destLon,
+                    rsType = ConversationContext.lastRouteTransport
+                )
+                if (opened) {
+                    NellyAccessibilityService.scheduleAutoStart2GisNavigation()
+                }
+                val label = destName ?: "выбранной точки"
+                return CommandResult("Продолжаю маршрут до «$label» в 2ГИС!")
+            }
+
+            if (!NellyAccessibilityService.isEnabled(context)) {
+                return CommandResult(
+                    "Чтобы я нажимала «Продолжить маршрут» и «В путь» прямо внутри открытого 2ГИС, включите переключатель «Управление 2ГИС и авто-отправку» на главном экране Нелли!"
+                )
+            }
+            return CommandResult("Откройте точку в 2ГИС или скажите: «проложи маршрут до…», и я сразу запущу ведение!")
+        }
+
+        // 3. 2ГИС: Stop / Finish Route
+        if (lower in listOf(
+                "заверши маршрут", "завершить маршрут", "останови маршрут",
+                "остановить маршрут", "отмени маршрут", "сбрось маршрут", "закончи маршрут"
+            )
+        ) {
+            if (!NellyAccessibilityService.isEnabled(context)) {
+                return CommandResult("Включите «Управление 2ГИС» на главном экране Нелли, чтобы завершать маршрут голосом.")
+            }
+            val (_, stopMsg) = NellyAccessibilityService.perform2GisAction(TwoGisUiAction.STOP_ROUTE)
+            return CommandResult(stopMsg)
+        }
+
+        // 4. 2ГИС: Map Zoom & My Location
+        if (lower in listOf("приблизь карту", "увеличь карту", "увеличь масштаб") ||
+            (NellyAccessibilityService.isNavigatorActiveOrRecent(ownPkg) && lower in listOf("приблизь", "поближе"))
+        ) {
+            val (_, msg) = NellyAccessibilityService.perform2GisAction(TwoGisUiAction.ZOOM_IN)
+            return CommandResult(msg)
+        }
+        if (lower in listOf("отдали карту", "уменьши карту", "уменьши масштаб") ||
+            (NellyAccessibilityService.isNavigatorActiveOrRecent(ownPkg) && lower in listOf("отдали", "подальше"))
+        ) {
+            val (_, msg) = NellyAccessibilityService.perform2GisAction(TwoGisUiAction.ZOOM_OUT)
+            return CommandResult(msg)
+        }
+
+        // 5. Context-Aware Search when 2ГИС is ALREADY open ("найди аптеку", "покажи Абая 15")
+        if (NellyAccessibilityService.is2GisActiveOrRecent(ownPkg)) {
+            val dgisImplicitSearch = Regex("^(?:найди|поищи|покажи)\\s+(.+)$", RegexOption.IGNORE_CASE).find(original)
+            if (dgisImplicitSearch != null) {
+                val q = dgisImplicitSearch.groupValues[1].trim()
+                val qLower = q.lowercase(ruLocale)
+                val isOtherTarget = qLower.contains("ютуб") || qLower.contains("youtube") ||
+                    qLower.contains("гугл") || qLower.contains("интернет") || qLower.contains("контакт")
+                if (!isOtherTarget && q.isNotEmpty()) {
+                    LocationAnd2GisEngine.buildShortestRouteIn2GisAsync(
+                        context = context,
+                        rawPlaceQuery = q,
+                        transportMode = "car",
+                        autoStartNavigation = false
+                    ) { reply ->
+                        onAsyncReply(userDisplay, reply)
+                    }
+                    return CommandResult(spokenResponse = "Ищу «$q» в открытом 2ГИС…", asyncPending = true)
+                }
+            }
+        }
+
+        // 6. Open-Chat Auto-Send! When user ALREADY opened a chat in WhatsApp / Telegram / SMS / Instagram
+        val explicitHereChat = Regex(
+            "^(?:отправь сюда|напиши сюда|ответь сюда|введи текст|отправь в чат|ответь в чате)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (explicitHereChat != null) {
+            val text = explicitHereChat.groupValues[1].trim()
+            if (!NellyAccessibilityService.isEnabled(context)) {
+                return CommandResult("Включите «Управление 2ГИС и авто-отправку» на главном экране Нелли, чтобы отправлять сообщения в открытом чате!")
+            }
+            val (ok, chatMsg) = NellyAccessibilityService.sendInCurrentlyOpenChat(text)
+            return CommandResult(if (ok) "Отправила в открытый чат: «$text»!" else chatMsg)
+        }
+
+        if (NellyAccessibilityService.isEnabled(context) && NellyAccessibilityService.isMessengerActive(ownPkg).first) {
+            val openChatSend = Regex("^(?:отправь|ответь)\\s+(?:сообщение\\s+)?(.+)$", RegexOption.IGNORE_CASE).find(original)
+            if (openChatSend != null) {
+                val payload = openChatSend.groupValues[1].trim()
+                val pLower = payload.lowercase(ruLocale).replace('ё', 'е')
+                val mentionsExplicitRecipient = Regex(
+                    "^(?:смс|sms|письмо|мои координаты|мою геолокацию)|\\b(?:в ватсап|в вотсап|в телеграм|в телегу|по смс)\\b"
+                ).containsMatchIn(pLower)
+                if (!mentionsExplicitRecipient && payload.isNotEmpty()) {
+                    val (sentOk, _) = NellyAccessibilityService.sendInCurrentlyOpenChat(payload)
+                    if (sentOk) {
+                        return CommandResult("Отправила сообщение: «$payload»!")
+                    }
+                }
+            }
+        }
+
+        // 7. Universal Screen Button Clicker ("нажми кнопку ...", "нажми на ...", "кликни ...")
+        val clickBtnMatch = Regex(
+            "^(?:нажми кнопку|нажми на кнопку|нажми на|кликни на|кликни|тапни)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (clickBtnMatch != null) {
+            val targetLabel = clickBtnMatch.groupValues[1].trim(' ', '"', '«', '»', '.')
+            if (!NellyAccessibilityService.isEnabled(context)) {
+                return CommandResult("Включите управление экраном на главном экране Нелли, чтобы я могла нажимать кнопки на экране!")
+            }
+            val (_, clickMsg) = NellyAccessibilityService.clickAnyScreenButton(targetLabel)
+            return CommandResult(clickMsg)
+        }
+
+        // 8. Universal Scroll / Swipe (Reels, TikTok, Shorts, Browser, Chats) & Global Navigation
+        if (lower in listOf(
+                "листай вниз", "прокрути вниз", "свайп вверх",
+                "следующее видео", "следующий рилс", "дальше видео", "листай дальше"
+            )
+        ) {
+            val ok = NellyAccessibilityService.swipeScreen(SwipeDir.UP_NEXT)
+            return CommandResult(if (ok) "Листаю дальше." else "Включите управление экраном для прокрутки голосом.")
+        }
+        if (lower in listOf("листай вверх", "прокрути вверх", "свайп вниз", "предыдущее видео", "верни видео")) {
+            val ok = NellyAccessibilityService.swipeScreen(SwipeDir.DOWN_PREV)
+            return CommandResult(if (ok) "Листаю назад." else "Включите управление экраном для прокрутки голосом.")
+        }
+        if (lower in listOf("шаг назад", "вернись назад", "нажми назад", "кнопка назад")) {
+            val ok = NellyAccessibilityService.performSystemNavigation(AccessibilityService.GLOBAL_ACTION_BACK)
+            return CommandResult(if (ok) "Назад." else "Включите управление экраном для команды «Назад».")
+        }
+        if (lower in listOf("на главный экран", "главный экран", "домой", "сверни приложение", "сверни все")) {
+            val ok = NellyAccessibilityService.performSystemNavigation(AccessibilityService.GLOBAL_ACTION_HOME)
+            return CommandResult(if (ok) "Перехожу на главный экран." else "Включите управление экраном для команды «Домой».")
+        }
+
+        return null
+    }
+
+    private fun handleCommunicationCommands(
+        lower: String,
+        original: String,
+        userDisplay: String
+    ): CommandResult? {
+        // Emergency numbers dial screen (safe ACTION_DIAL)
         if (lower.contains("скорая помощь") || lower.contains("вызови скорую") || lower == "номер скорой") {
             safeStart(Intent(Intent.ACTION_DIAL, Uri.parse("tel:103")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
-            return "Открываю набор скорой помощи: 103 (единый номер экстренных служб — 112)."
+            return CommandResult("Открываю набор скорой помощи: 103 (единый номер экстренных служб — 112).")
         }
         if (lower.contains("служба спасения") || lower == "номер 112") {
             safeStart(Intent(Intent.ACTION_DIAL, Uri.parse("tel:112")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
-            return "Открываю набор экстренной службы 112."
+            return CommandResult("Открываю набор экстренной службы 112.")
         }
 
         // Add contact
@@ -1196,26 +1380,36 @@ class CommandProcessor(
                 if (name.isNotEmpty()) putExtra(ContactsContract.Intents.Insert.NAME, name)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return if (safeStart(intent)) "Открываю создание контакта." else "Не удалось открыть Контакты."
+            return CommandResult(if (safeStart(intent)) "Открываю создание контакта." else "Не удалось открыть Контакты.")
         }
 
-        // Voice Call to Contact by Name or Number + WhatsApp contact message/call!
-        ContactCaller.handleCallOrContactMessage(context, lower, original)?.let { return it }
+        // Hands-Free Automatic Messaging (SMS via SmsManager, WhatsApp/Telegram auto-send, GPS share) & Voice Calling!
+        ContactCaller.handleCallOrContactMessage(context, lower, original, userDisplay, onAsyncReply)?.let { return it }
 
-        // Send message directly to WhatsApp or Telegram (tolerating pronunciation variants!)
+        // If WhatsApp or Telegram is mentioned WITHOUT a contact name:
+        // If WhatsApp/Telegram chat is ALREADY open, send right inside it; otherwise open share picker + auto-send!
         val waMsgMatch = Regex(
             "^(?:напиши|отправь)\\s+в\\s+(?:ватсап\\w*|вотсап\\w*|вацап\\w*|воцап\\w*|whatsapp)\\s+(.+)$",
             RegexOption.IGNORE_CASE
         ).find(original)
         if (waMsgMatch != null) {
             val msg = waMsgMatch.groupValues[1].trim()
+            if (NellyAccessibilityService.isEnabled(context) &&
+                NellyAccessibilityService.getEffectiveForegroundApp(context.packageName) in setOf("com.whatsapp", "com.whatsapp.w4b") &&
+                NellyAccessibilityService.sendInCurrentlyOpenChat(msg).first
+            ) {
+                return CommandResult("Отправила в открытый чат WhatsApp: «$msg»!")
+            }
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 setPackage("com.whatsapp")
                 putExtra(Intent.EXTRA_TEXT, msg)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return if (safeStart(intent)) "Открываю WhatsApp для выбора получателя." else "WhatsApp не установлен на устройстве."
+            return CommandResult(
+                if (safeStart(intent)) "Выберите контакт в WhatsApp, либо скажите «напиши Маме в Ватсап $msg», чтобы я отправила полностью сама!"
+                else "WhatsApp не установлен на устройстве."
+            )
         }
 
         val tgMsgMatch = Regex(
@@ -1224,13 +1418,22 @@ class CommandProcessor(
         ).find(original)
         if (tgMsgMatch != null) {
             val msg = tgMsgMatch.groupValues[1].trim()
+            if (NellyAccessibilityService.isEnabled(context) &&
+                NellyAccessibilityService.getEffectiveForegroundApp(context.packageName).contains("telegram") &&
+                NellyAccessibilityService.sendInCurrentlyOpenChat(msg).first
+            ) {
+                return CommandResult("Отправила в открытый чат Telegram: «$msg»!")
+            }
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 setPackage("org.telegram.messenger")
                 putExtra(Intent.EXTRA_TEXT, msg)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return if (safeStart(intent)) "Открываю Telegram для отправки сообщения." else "Telegram не установлен."
+            return CommandResult(
+                if (safeStart(intent)) "Выберите чат в Telegram, либо назовите имя контакта («напиши Саше в Телеграм $msg»), чтобы я отправила сама!"
+                else "Telegram не установлен."
+            )
         }
 
         // Email
@@ -1240,18 +1443,11 @@ class CommandProcessor(
                 if (body.isNotEmpty()) putExtra(Intent.EXTRA_TEXT, body)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return if (safeStart(intent)) "Открываю почтовый клиент." else "Почтовое приложение не найдено."
+            return CommandResult(if (safeStart(intent)) "Открываю почтовый клиент." else "Почтовое приложение не найдено.")
         }
 
-        if (lower.startsWith("напиши смс") || lower.startsWith("отправь смс") ||
-            lower.startsWith("напиши сообщение") || lower.startsWith("отправь сообщение")
-        ) {
-            val body = original.replace(Regex("^(?:напиши|отправь)\\s+(?:смс|сообщение)\\s*", RegexOption.IGNORE_CASE), "").trim()
-            val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")).apply {
-                if (body.isNotEmpty()) putExtra("sms_body", body)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            return if (safeStart(intent)) "Открываю сообщения." else "Приложение СМС не найдено."
+        if (lower in listOf("отправь смс", "напиши смс", "отправь сообщение", "напиши сообщение")) {
+            return CommandResult("Скажите кому и какой текст отправить — например: «отправь СМС Маме я скоро буду» или «напиши Маме в Ватсап привет»!")
         }
 
         return null
@@ -1345,12 +1541,73 @@ class CommandProcessor(
         return "Ищу на YouTube: «$query»."
     }
 
-    private fun handleMapsCommand(lower: String, original: String): String? {
-        if (lower in listOf("где я", "где я сейчас", "мое местоположение", "покажи где я")) {
-            openGeoQuery("")
-            return "Открываю карты для показа вашего местоположения."
+    private fun handle2GisAndLocationCommands(
+        lower: String,
+        original: String,
+        userDisplay: String
+    ): CommandResult? {
+        // 1. Exact GPS Coordinates ("мои координаты", "определи мои координаты", "широта и долгота")
+        if (lower.contains("мои координаты") || lower.contains("какие у меня координаты") ||
+            lower.contains("определи координаты") || lower.contains("широта и долгота") ||
+            lower == "координаты"
+        ) {
+            LocationAnd2GisEngine.speakMyCoordinatesAndAddressAsync(context, coordsOnly = true) { reply ->
+                onAsyncReply(userDisplay, reply)
+            }
+            return CommandResult(spokenResponse = "Определяю ваши точные GPS-координаты…", asyncPending = true)
         }
 
+        // 2. Where Am I / Current Street Address ("где я", "где я нахожусь", "какой тут адрес")
+        if (lower in listOf(
+                "где я", "где я сейчас", "где я нахожусь", "мое местоположение",
+                "определи мое местоположение", "определи где я", "какой тут адрес",
+                "какой здесь адрес", "на какой я улице", "покажи где я"
+            )
+        ) {
+            LocationAnd2GisEngine.speakMyCoordinatesAndAddressAsync(context, coordsOnly = false) { reply ->
+                onAsyncReply(userDisplay, reply)
+            }
+            return CommandResult(spokenResponse = "Определяю ваше местоположение и адрес…", asyncPending = true)
+        }
+
+        // 3. Bare Route Prompt -> Slot Filling
+        if (lower in listOf(
+                "проложи маршрут", "построй маршрут", "маршрут", "маршрут в 2гис",
+                "маршрут в два гис", "найди кратчайший путь", "кратчайший путь"
+            )
+        ) {
+            ConversationContext.setPendingSlot(PendingSlot.ROUTE_DESTINATION)
+            return CommandResult("Куда проложить кратчайший маршрут в 2ГИС? Назовите место или адрес.")
+        }
+
+        // 4. Determine Place / Distance / Search in 2GIS
+        // ("определи место ...", "сколько ехать до ...", "сколько километров до ...", "найди в 2гис ...")
+        val dgisSearchMatch = Regex(
+            "^(?:найди|поищи|покажи|открой)\\s+(?:в|через|по)\\s+(?:2\\s*гис|два\\s*гис|дубль\\s*гис|тугис|2gis)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (dgisSearchMatch != null) {
+            val placeQ = dgisSearchMatch.groupValues[1].trim()
+            LocationAnd2GisEngine.determinePlaceDetailsAsync(context, placeQ, openIn2GisCard = true) { reply ->
+                onAsyncReply(userDisplay, reply)
+            }
+            return CommandResult(spokenResponse = "Определяю место «$placeQ» и открываю в 2ГИС…", asyncPending = true)
+        }
+
+        val placeDetermineMatch = Regex(
+            "^(?:определи место|найди место|какой адрес у|сколько ехать до|сколько идти до|сколько километров до|расстояние до)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(original)
+        if (placeDetermineMatch != null) {
+            val placeQ = placeDetermineMatch.groupValues[1].trim(' ', '?')
+            val openCard = lower.startsWith("определи место") || lower.startsWith("найди место")
+            LocationAnd2GisEngine.determinePlaceDetailsAsync(context, placeQ, openIn2GisCard = openCard) { reply ->
+                onAsyncReply(userDisplay, reply)
+            }
+            return CommandResult(spokenResponse = "Считаю кратчайшее расстояние до «$placeQ»…", asyncPending = true)
+        }
+
+        // 5. Nearby Places (25+ categories) -> Resolves genuinely nearest place around GPS & builds route in 2GIS!
         val nearbyPlaces = mapOf(
             "аптек" to "аптека",
             "супермаркет" to "супермаркет",
@@ -1363,45 +1620,92 @@ class CommandProcessor(
             "азс" to "АЗС",
             "автомойк" to "автомойка",
             "шиномонтаж" to "шиномонтаж",
+            "сто " to "автосервис",
             "банкомат" to "банкомат",
             "банк" to "отделение банка",
+            "цон" to "ЦОН",
+            "нотариус" to "нотариус",
             "больниц" to "больница",
             "поликлиник" to "поликлиника",
+            "травмпункт" to "травмпункт",
             "стоматолог" to "стоматология",
             "парикмахерск" to "парикмахерская",
             "барбершоп" to "барбершоп",
             "гостиниц" to "гостиница",
             "отель" to "отель",
             "почт" to "отделение почты",
-            "парк" to "парк отдыха"
+            "парк" to "парк"
         )
         if (lower.contains("ближайш") || lower.contains("рядом") || lower.contains("поблизости")) {
             for ((stem, placeQuery) in nearbyPlaces) {
                 if (lower.contains(stem)) {
-                    openGeoQuery(placeQuery)
-                    return "Ищу поблизости на карте: $placeQuery."
+                    val mode = detectTransportMode(lower)
+                    LocationAnd2GisEngine.buildShortestRouteIn2GisAsync(
+                        context = context,
+                        rawPlaceQuery = placeQuery,
+                        transportMode = mode,
+                        autoStartNavigation = true
+                    ) { reply ->
+                        onAsyncReply(userDisplay, reply)
+                    }
+                    return CommandResult(
+                        spokenResponse = "Ищу ближайший объект «$placeQuery» по вашим координатам и строю кратчайший маршрут в 2ГИС…",
+                        asyncPending = true
+                    )
                 }
             }
         }
 
-        val mapMatch = Regex(
-            "^(?:покажи на карте|найди на карте|построй маршрут до|построй маршрут в|маршрут до|маршрут в|навигатор до|как доехать до|поехали в)\\s+(.+)$",
+        // 6. Shortest Path & Full Route Building in 2GIS!
+        val routeMatch = Regex(
+            "^(?:найди кратчайший путь до|кратчайший путь до|кратчайший маршрут до|самый короткий путь до|самый быстрый путь до|самый быстрый маршрут до|" +
+                "проложи маршрут(?:\\s+в\\s+(?:2\\s*гис|два\\s*гис|дубль\\s*гис|2gis))?\\s+(?:до|в|на)|" +
+                "построй маршрут(?:\\s+в\\s+(?:2\\s*гис|два\\s*гис|дубль\\s*гис|2gis))?\\s+(?:до|в|на)|" +
+                "пеший маршрут(?:\\s+в\\s+(?:2\\s*гис|два\\s*гис))?\\s+(?:до|в|на)|" +
+                "маршрут на автобусе(?:\\s+в\\s+(?:2\\s*гис|два\\s*гис))?\\s+(?:до|в|на)|" +
+                "маршрут на такси(?:\\s+в\\s+(?:2\\s*гис|два\\s*гис))?\\s+(?:до|в|на)|" +
+                "маршрут(?:\\s+в\\s+(?:2\\s*гис|два\\s*гис|дубль\\s*гис|2gis))?\\s+(?:до|в|на)|" +
+                "в\\s+(?:2\\s*гис|два\\s*гис|дубль\\s*гис)\\s+(?:маршрут\\s+)?(?:до|в|на)|" +
+                "навигатор\\s+(?:до|в|на)|как доехать\\s+(?:до|в|на)|как добраться\\s+(?:до|в|на)|как пройти\\s+(?:до|в|к)|" +
+                "поехали\\s+(?:до|в|на)|веди\\s+(?:до|в|на)|покажи на карте|найди на карте)\\s+(.+)$",
             RegexOption.IGNORE_CASE
         ).find(original) ?: return null
 
-        val dest = mapMatch.groupValues[1].trim()
-        openGeoQuery(dest)
-        return "Открываю маршрут / карту: «$dest»."
+        var dest = routeMatch.groupValues[1].trim(' ', '.', ',', '!', '?')
+        val mode = detectTransportMode("$lower $dest")
+        dest = dest.replace(
+            Regex("\\s+(?:пешком|на машине|на авто|на автобусе|на общественном транспорте|на такси|на велосипеде)$", RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+
+        if (lower.startsWith("покажи на карте") || lower.startsWith("найди на карте")) {
+            LocationAnd2GisEngine.determinePlaceDetailsAsync(context, dest, openIn2GisCard = true) { reply ->
+                onAsyncReply(userDisplay, reply)
+            }
+            return CommandResult(spokenResponse = "Открываю «$dest» на карте 2ГИС…", asyncPending = true)
+        }
+
+        LocationAnd2GisEngine.buildShortestRouteIn2GisAsync(
+            context = context,
+            rawPlaceQuery = dest,
+            transportMode = mode,
+            autoStartNavigation = true
+        ) { reply ->
+            onAsyncReply(userDisplay, reply)
+        }
+        return CommandResult(
+            spokenResponse = "Определяю координаты «$dest» и прокладываю кратчайший маршрут в 2ГИС…",
+            asyncPending = true
+        )
     }
 
-    private fun openGeoQuery(query: String) {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val uriStr = if (query.isEmpty()) "geo:0,0" else "geo:0,0?q=$encoded"
-        val geoIntent = Intent(Intent.ACTION_VIEW, Uri.parse(uriStr)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        if (!safeStart(geoIntent)) {
-            openUrl("https://www.google.com/maps/search/?api=1&query=$encoded")
+    private fun detectTransportMode(lowerText: String): String {
+        return when {
+            lowerText.contains("пешком") || lowerText.contains("пеший") || lowerText.contains("пройти") || lowerText.contains("дойти") -> "pedestrian"
+            lowerText.contains("автобус") || lowerText.contains("общественн") || lowerText.contains("маршрутк") -> "ctx"
+            lowerText.contains("такси") -> "taxi"
+            lowerText.contains("велосипед") || lowerText.contains("самокат") -> "bicycle"
+            else -> "car"
         }
     }
 

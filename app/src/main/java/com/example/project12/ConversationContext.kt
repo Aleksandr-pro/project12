@@ -9,7 +9,9 @@ enum class PendingSlot {
     SEARCH_QUERY,
     TRANSLATE_PHRASE,
     OPEN_APP_NAME,
-    CALL_TARGET
+    CALL_TARGET,
+    ROUTE_DESTINATION,
+    MESSAGE_BODY
 }
 
 data class RiddleItem(
@@ -40,6 +42,18 @@ object ConversationContext {
 
     @Volatile
     var stopwatchStartElapsedMs: Long? = null
+
+    @Volatile
+    var lastRouteDestLat: Double? = null
+
+    @Volatile
+    var lastRouteDestLon: Double? = null
+
+    @Volatile
+    var lastRouteDestName: String? = null
+
+    @Volatile
+    var lastRouteTransport: String = "car"
 
     @Volatile
     private var pendingSlotInternal: PendingSlot? = null
