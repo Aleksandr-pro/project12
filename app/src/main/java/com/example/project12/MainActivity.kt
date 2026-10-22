@@ -199,9 +199,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         updateScreenControlStatus()
 
-        setupVoiceCard()
-        setupTradingCard()
-        setupPermissionsCard()
+        runCatching { setupVoiceCard() }.onFailure { safeSetupFailure("Голос", it) }
+        runCatching { setupTradingCard() }.onFailure { safeSetupFailure("Трейдинг", it) }
+        runCatching { setupPermissionsCard() }.onFailure { safeSetupFailure("Разрешения", it) }
+
+        mainHandler.postDelayed({ showLastCrashIfAny() }, 700L)
 
         fullGuideSections = buildGuideSections()
         tvCommandsGuide.text = fullGuideSections.joinToString("\n\n")
@@ -218,6 +220,59 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     // ============================================================== v5.0 UI
+
+    /** Показывает ошибку предыдущего запуска, чтобы её можно было прислать разработчику. */
+    private fun showLastCrashIfAny() {
+        if (isFinishing || isDestroyed) return
+        val prefsLocal = getSharedPreferences("assistant_prefs", MODE_PRIVATE)
+        val crash = prefsLocal.getString("last_crash", null)
+        if (crash.isNullOrBlank()) return
+        prefsLocal.edit().remove("last_crash").apply()
+
+        try {
+            tvDiagnostic.visibility = View.VISIBLE
+            tvDiagnostic.text = "🐞 Прошлая ошибка: " + crash.lineSequence().take(3).joinToString(" ")
+        } catch (_: Exception) {
+        }
+
+        try {
+            val textView = TextView(this).apply {
+                text = crash.take(6000)
+                setTextIsSelectable(true)
+                textSize = 11f
+                setPadding(28, 28, 28, 28)
+            }
+            val scroll = android.widget.ScrollView(this).apply { addView(textView) }
+            AlertDialog.Builder(this)
+                .setTitle("Нелли: ошибка прошлого запуска")
+                .setView(scroll)
+                .setPositiveButton("Скопировать") { _, _ ->
+                    copyTextToClipboard(crash)
+                    Toast.makeText(this, "Ошибка скопирована", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Закрыть", null)
+                .show()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun copyTextToClipboard(text: String) {
+        try {
+            val manager = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            manager.setPrimaryClip(android.content.ClipData.newPlainText("Нelly_error", text))
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun safeSetupFailure(section: String, error: Throwable) {
+        try {
+            tvDiagnostic.visibility = View.VISIBLE
+            tvDiagnostic.text = "⚠️ Раздел «$section» не загрузился: " +
+                "${error.javaClass.simpleName}: ${error.message.orEmpty().take(120)}. Остальное работает."
+        } catch (_: Exception) {
+        }
+    }
 
     private fun setupVoiceCard() {
         updateVoiceUi()
@@ -246,6 +301,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun updateVoiceUi() {
+        if (!this::tvVoiceStatus.isInitialized) return
         val style = VoicePersona.style
         val selectedName = try {
             localTts?.voice?.name
@@ -552,13 +608,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            localTts?.let { engine ->
-                engine.language = Locale("ru", "RU")
-                VoicePersona.selectVoice(engine)
-                VoicePersona.apply(engine)
-            }
+            // ВАЖНО: onInit вызывается движком синтеза речи в ФОНОВОМ (binder) потоке.
+            // Трогать элементы интерфейса здесь нельзя — только через главный поток.
             localTtsReady = true
-            updateVoiceUi()
+            val engine = localTts
+            if (engine != null) {
+                try {
+                    engine.language = Locale("ru", "RU")
+                    VoicePersona.selectVoice(engine)
+                    VoicePersona.apply(engine)
+                } catch (_: Exception) {
+                }
+            }
+            mainHandler.post {
+                if (!isFinishing && !isDestroyed) {
+                    try {
+                        updateVoiceUi()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
         }
     }
 

@@ -1,6 +1,12 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 
+// Постоянный ключ подписи Нелли.
+// Благодаря ему новые версии устанавливаются ПОВЕРХ старых — без удаления приложения.
+// Если файла ключа нет, сборка автоматически откатывается на стандартную отладочную подпись.
+def nellyKeystore = file('../keystore/nelly.p12')
+def hasNellyKeystore = nellyKeystore.exists()
+
 android {
     namespace 'com.example.project12'
     compileSdk 34
@@ -9,14 +15,34 @@ android {
         applicationId 'com.example.project12'
         minSdk 24
         targetSdk 34
-        versionCode 7
-        versionName '5.0'
+        versionCode 8
+        versionName '5.1'
+    }
+
+    signingConfigs {
+        if (hasNellyKeystore) {
+            nelly {
+                storeFile nellyKeystore
+                storePassword 'nelly2026'
+                keyAlias 'nelly'
+                keyPassword 'nelly2026'
+                storeType 'PKCS12'
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            if (hasNellyKeystore) {
+                signingConfig signingConfigs.nelly
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasNellyKeystore) {
+                signingConfig signingConfigs.nelly
+            }
         }
     }
 
