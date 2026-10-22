@@ -9,16 +9,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import java.util.Locale
 
@@ -26,26 +21,26 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var speechRecognizer: SpeechRecognizer? = null
+    private var speechEngine: SpeechEngine? = null
     private lateinit var commandProcessor: CommandProcessor
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var isListening = false
     private var isSpeaking = false
     private var isDestroyed = false
+    private var pendingStopAfterSpeak = false
+    private var pausedForExternalDialog = false
     private var awakeUntilMillis = 0L
-    private var consecutiveBusyErrors = 0
-
-    private val restartRunnable = Runnable {
-        if (!isDestroyed && !isSpeaking && !isListening) {
-            startDirectListening()
-        }
-    }
 
     private val ttsFallbackRunnable = Runnable {
         if (!isDestroyed && isSpeaking) {
             isSpeaking = false
-            scheduleRestartListening(250L)
+            val shouldStop = pendingStopAfterSpeak
+            pendingStopAfterSpeak = false
+            if (shouldStop) {
+                stopSelf()
+            } else if (!pausedForExternalDialog) {
+                speechEngine?.start()
+            }
         }
     }
 
@@ -62,162 +57,112 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         }
 
         tts = TextToSpeech(this, this)
-        initSpeechRecognizer()
     }
 
-    private fun initSpeechRecognizer() {
-        try {
-            speechRecognizer?.destroy()
-        } catch (_: Exception) {
+    private fun ensureSpeechEngine(): SpeechEngine {
+        var engine = speechEngine
+        if (engine == null) {
+            engine = SpeechEngine(this) { candidates ->
+                handleRecognizedCandidates(candidates)
+            }
+            speechEngine = engine
         }
-        speechRecognizer = null
-
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            AssistantStateBus.updateServiceState(
-                running = true,
-                listening = false,
-                status = getString(R.string.error_no_recognizer)
-            )
-            Toast.makeText(this, R.string.error_no_recognizer, Toast.LENGTH_LONG).show()
-            return
-        }
-
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)?.apply {
-            setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    consecutiveBusyErrors = 0
-                    val modeHint = if (AssistantStateBus.directMode) {
-                        "Слушаю напрямую — говорите команду…"
-                    } else {
-                        "Жду команду со словом «Помощник»…"
-                    }
-                    AssistantStateBus.updateServiceState(running = true, listening = true, status = modeHint)
-                }
-
-                override fun onBeginningOfSpeech() {}
-
-                override fun onRmsChanged(rmsDb: Float) {}
-
-                override fun onBufferReceived(buffer: ByteArray?) {}
-
-                override fun onEndOfSpeech() {
-                    isListening = false
-                }
-
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val partial = partialResults
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        ?.trim()
-                        .orEmpty()
-                    if (partial.isNotEmpty()) {
-                        AssistantStateBus.updatePartialSpeech(partial)
-                    }
-                }
-
-                override fun onResults(results: Bundle?) {
-                    isListening = false
-                    consecutiveBusyErrors = 0
-                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
-                    handleRecognizedCandidates(matches)
-                }
-
-                override fun onError(error: Int) {
-                    isListening = false
-                    if (isDestroyed || isSpeaking) return
-
-                    when (error) {
-                        SpeechRecognizer.ERROR_NO_MATCH,
-                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                            consecutiveBusyErrors = 0
-                            scheduleRestartListening(250L)
-                        }
-                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                        SpeechRecognizer.ERROR_CLIENT -> {
-                            consecutiveBusyErrors++
-                            if (consecutiveBusyErrors >= 2) {
-                                consecutiveBusyErrors = 0
-                                initSpeechRecognizer()
-                            }
-                            scheduleRestartListening(900L)
-                        }
-                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                            AssistantStateBus.updateServiceState(
-                                running = true,
-                                listening = false,
-                                status = getString(R.string.error_permissions)
-                            )
-                        }
-                        SpeechRecognizer.ERROR_NETWORK,
-                        SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-                        SpeechRecognizer.ERROR_SERVER -> {
-                            AssistantStateBus.updateServiceState(
-                                running = true,
-                                listening = false,
-                                status = "Ожидание сети для распознавания…"
-                            )
-                            scheduleRestartListening(2500L)
-                        }
-                        else -> {
-                            scheduleRestartListening(800L)
-                        }
-                    }
-                }
-
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-        }
+        return engine
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP_SERVICE -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
+        if (intent?.action == ACTION_STOP_SERVICE) {
+            stopSelf()
+            return START_NOT_STICKY
         }
 
+        // Must enter foreground with FOREGROUND_SERVICE_TYPE_MICROPHONE BEFORE binding SpeechRecognizer
         val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            AssistantStateBus.updateServiceState(
+                running = false,
+                listening = false,
+                status = "Не удалось запустить фоновый микрофон",
+                diagnostic = "Откройте приложение на экране и нажмите Запустить (${e.javaClass.simpleName})."
             )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+            stopSelf()
+            return START_NOT_STICKY
         }
 
+        val engine = ensureSpeechEngine()
+
         when (intent?.action) {
-            ACTION_EXECUTE_TEXT -> {
-                val cmdText = intent.getStringExtra(EXTRA_COMMAND_TEXT).orEmpty().trim()
-                if (cmdText.isNotEmpty()) {
-                    executeResolvedCommand(cmdText, cmdText)
-                } else {
-                    scheduleRestartListening(200L)
-                }
-            }
-            ACTION_FORCE_LISTEN -> {
+            ACTION_PAUSE_FOR_DIALOG -> {
+                pausedForExternalDialog = true
                 stopSpeakingInternal()
-                awakeUntilMillis = System.currentTimeMillis() + 15_000L
-                try {
-                    speechRecognizer?.cancel()
-                } catch (_: Exception) {
-                }
-                isListening = false
-                scheduleRestartListening(150L)
-            }
-            ACTION_STOP_SPEAKING -> {
-                stopSpeakingInternal()
-                scheduleRestartListening(200L)
-            }
-            else -> {
+                engine.pause()
                 AssistantStateBus.updateServiceState(
                     running = true,
                     listening = false,
-                    status = "Запуск прямого распознавания…"
+                    status = "Ожидание системного окна голосового ввода…"
                 )
-                scheduleRestartListening(200L)
+            }
+
+            ACTION_RESUME_LISTENING -> {
+                pausedForExternalDialog = false
+                if (!isSpeaking) {
+                    engine.start()
+                }
+            }
+
+            ACTION_ACTIVITY_PAUSED -> {
+                engine.onActivityBackgrounded()
+            }
+
+            ACTION_EXECUTE_TEXT -> {
+                pausedForExternalDialog = false
+                val candidates = intent.getStringArrayListExtra(EXTRA_CANDIDATES_LIST)
+                val single = intent.getStringExtra(EXTRA_COMMAND_TEXT).orEmpty().trim()
+                val list = when {
+                    !candidates.isNullOrEmpty() -> candidates.map { it.trim() }.filter { it.isNotEmpty() }
+                    single.isNotEmpty() -> listOf(single)
+                    else -> emptyList()
+                }
+                if (list.isNotEmpty()) {
+                    // Direct command submitted from dialog or text box always executes regardless of wake word
+                    executeCandidateListDirectly(list)
+                } else if (!isSpeaking) {
+                    engine.start()
+                }
+            }
+
+            ACTION_FORCE_LISTEN -> {
+                pausedForExternalDialog = false
+                stopSpeakingInternal()
+                awakeUntilMillis = System.currentTimeMillis() + 15_000L
+                engine.forceRestartImmediate()
+            }
+
+            ACTION_STOP_SPEAKING -> {
+                stopSpeakingInternal()
+                if (!pausedForExternalDialog) {
+                    engine.start()
+                }
+            }
+
+            else -> {
+                pausedForExternalDialog = false
+                AssistantStateBus.updateServiceState(
+                    running = true,
+                    listening = false,
+                    status = "Подключение микрофона…"
+                )
+                engine.start()
             }
         }
 
@@ -227,7 +172,9 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     private fun handleRecognizedCandidates(matches: List<String>) {
         val primary = matches.firstOrNull()?.trim().orEmpty()
         if (primary.isEmpty()) {
-            scheduleRestartListening(250L)
+            if (!pausedForExternalDialog && !isSpeaking) {
+                speechEngine?.start()
+            }
             return
         }
 
@@ -236,7 +183,9 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         if (!AssistantStateBus.directMode) {
             val withinAwakeWindow = System.currentTimeMillis() < awakeUntilMillis
             if (!hadWakeWord && !withinAwakeWindow) {
-                scheduleRestartListening(250L)
+                if (!pausedForExternalDialog && !isSpeaking) {
+                    speechEngine?.start()
+                }
                 return
             }
             if (hadWakeWord && stripped.isEmpty()) {
@@ -246,25 +195,30 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
                 speak(reply)
                 return
             }
-            val cmd = if (hadWakeWord) stripped else primary
             awakeUntilMillis = System.currentTimeMillis() + 8_000L
-            executeResolvedCommand(primary, cmd)
+            executeCandidateListDirectly(matches)
             return
         }
 
-        // Direct mode (default): recognize and execute immediately!
+        // Direct mode (default): execute immediately
         if (hadWakeWord && stripped.isEmpty()) {
-            val reply = "Я слушаю напрямую — можете сразу называть любую команду!"
+            val reply = "Я слушаю напрямую — сразу произносите команду!"
             AssistantStateBus.addDialogue(primary, reply)
             speak(reply)
             return
         }
 
-        val firstCmd = if (hadWakeWord && stripped.isNotEmpty()) stripped else primary
+        executeCandidateListDirectly(matches)
+    }
+
+    private fun executeCandidateListDirectly(matches: List<String>) {
+        val primary = matches.first().trim()
+        val (hadWake, stripped) = commandProcessor.stripWakeWordPrefix(primary)
+        val firstCmd = if (hadWake && stripped.isNotEmpty()) stripped else primary
+
         var result = commandProcessor.process(firstCmd)
         var chosenDisplay = primary
 
-        // Check alternative STT hypotheses if #1 didn't match a command
         if (!result.matched && matches.size > 1) {
             for (alt in matches.drop(1)) {
                 val altClean = alt.trim()
@@ -283,16 +237,13 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         applyCommandResult(chosenDisplay, result)
     }
 
-    private fun executeResolvedCommand(displayUserText: String, commandText: String) {
-        val result = commandProcessor.process(commandText)
-        applyCommandResult(displayUserText, result)
-    }
-
     private fun applyCommandResult(displayUserText: String, result: CommandResult) {
         if (result.stopSpeakingOnly) {
             stopSpeakingInternal()
             AssistantStateBus.addDialogue(displayUserText, "Озвучка остановлена.")
-            scheduleRestartListening(250L)
+            if (!pausedForExternalDialog) {
+                speechEngine?.start()
+            }
             return
         }
 
@@ -306,47 +257,15 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
             speak(reply, stopAfter = result.shouldStopService)
         } else if (result.shouldStopService) {
             stopSelf()
-        } else {
-            scheduleRestartListening(250L)
+        } else if (!pausedForExternalDialog && !isSpeaking) {
+            speechEngine?.start()
         }
-    }
-
-    private fun startDirectListening() {
-        if (isDestroyed || isSpeaking || isListening) return
-        val recognizer = speechRecognizer
-        if (recognizer == null) {
-            initSpeechRecognizer()
-            if (speechRecognizer == null) return
-        }
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-        }
-
-        try {
-            isListening = true
-            speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
-            isListening = false
-            scheduleRestartListening(1000L)
-        }
-    }
-
-    private fun scheduleRestartListening(delayMs: Long) {
-        if (isDestroyed) return
-        mainHandler.removeCallbacks(restartRunnable)
-        mainHandler.postDelayed(restartRunnable, delayMs)
     }
 
     private fun stopSpeakingInternal() {
         mainHandler.removeCallbacks(ttsFallbackRunnable)
         isSpeaking = false
+        pendingStopAfterSpeak = false
         try {
             tts?.stop()
         } catch (_: Exception) {
@@ -354,48 +273,45 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun speak(text: String, stopAfter: Boolean = false) {
-        mainHandler.removeCallbacks(restartRunnable)
         mainHandler.removeCallbacks(ttsFallbackRunnable)
-
-        if (isListening) {
-            isListening = false
-            try {
-                speechRecognizer?.cancel()
-            } catch (_: Exception) {
-            }
-        }
+        speechEngine?.pause()
 
         AssistantStateBus.updateServiceState(
             running = true,
             listening = false,
-            status = "Говорю: $text"
+            status = "🔊 Говорю: $text"
         )
 
         if (!ttsReady || tts == null) {
             if (stopAfter) {
                 mainHandler.postDelayed({ stopSelf() }, 400L)
-            } else {
-                scheduleRestartListening(400L)
+            } else if (!pausedForExternalDialog) {
+                mainHandler.postDelayed({
+                    if (!isDestroyed && !pausedForExternalDialog) {
+                        speechEngine?.start()
+                    }
+                }, 500L)
             }
             return
         }
 
         isSpeaking = true
+        pendingStopAfterSpeak = stopAfter
         val utteranceId = if (stopAfter) "utt_stop" else "utt_${System.currentTimeMillis()}"
         val res = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         if (res == TextToSpeech.ERROR) {
             isSpeaking = false
-            if (stopAfter) stopSelf() else scheduleRestartListening(350L)
+            pendingStopAfterSpeak = false
+            if (stopAfter) {
+                stopSelf()
+            } else if (!pausedForExternalDialog) {
+                speechEngine?.start()
+            }
             return
         }
 
-        val timeoutMs = (text.length * 95L).coerceIn(3000L, 18_000L)
-        mainHandler.postDelayed({
-            if (!isDestroyed && isSpeaking) {
-                isSpeaking = false
-                if (stopAfter) stopSelf() else scheduleRestartListening(250L)
-            }
-        }, timeoutMs)
+        val timeoutMs = (text.length * 95L).coerceIn(3500L, 20_000L)
+        mainHandler.postDelayed(ttsFallbackRunnable, timeoutMs)
     }
 
     override fun onInit(status: Int) {
@@ -410,10 +326,12 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
                     mainHandler.post {
                         mainHandler.removeCallbacks(ttsFallbackRunnable)
                         isSpeaking = false
-                        if (utteranceId == "utt_stop") {
+                        val shouldStop = pendingStopAfterSpeak || utteranceId == "utt_stop"
+                        pendingStopAfterSpeak = false
+                        if (shouldStop) {
                             stopSelf()
-                        } else if (!isDestroyed) {
-                            scheduleRestartListening(250L)
+                        } else if (!isDestroyed && !pausedForExternalDialog) {
+                            speechEngine?.start()
                         }
                     }
                 }
@@ -421,8 +339,15 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
                     mainHandler.post {
+                        mainHandler.removeCallbacks(ttsFallbackRunnable)
                         isSpeaking = false
-                        if (utteranceId == "utt_stop") stopSelf() else scheduleRestartListening(300L)
+                        val shouldStop = pendingStopAfterSpeak || utteranceId == "utt_stop"
+                        pendingStopAfterSpeak = false
+                        if (shouldStop) {
+                            stopSelf()
+                        } else if (!isDestroyed && !pausedForExternalDialog) {
+                            speechEngine?.start()
+                        }
                     }
                 }
             })
@@ -481,12 +406,8 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         isDestroyed = true
         mainHandler.removeCallbacksAndMessages(null)
-        try {
-            speechRecognizer?.cancel()
-            speechRecognizer?.destroy()
-        } catch (_: Exception) {
-        }
-        speechRecognizer = null
+        speechEngine?.destroy()
+        speechEngine = null
         try {
             tts?.stop()
             tts?.shutdown()
@@ -508,9 +429,13 @@ class VoiceAssistantService : Service(), TextToSpeech.OnInitListener {
         private const val NOTIFICATION_ID = 1001
 
         const val ACTION_FORCE_LISTEN = "com.example.project12.ACTION_FORCE_LISTEN"
+        const val ACTION_PAUSE_FOR_DIALOG = "com.example.project12.ACTION_PAUSE_FOR_DIALOG"
+        const val ACTION_RESUME_LISTENING = "com.example.project12.ACTION_RESUME_LISTENING"
+        const val ACTION_ACTIVITY_PAUSED = "com.example.project12.ACTION_ACTIVITY_PAUSED"
         const val ACTION_EXECUTE_TEXT = "com.example.project12.ACTION_EXECUTE_TEXT"
         const val ACTION_STOP_SPEAKING = "com.example.project12.ACTION_STOP_SPEAKING"
         const val ACTION_STOP_SERVICE = "com.example.project12.ACTION_STOP_SERVICE"
         const val EXTRA_COMMAND_TEXT = "extra_command_text"
+        const val EXTRA_CANDIDATES_LIST = "extra_candidates_list"
     }
 }

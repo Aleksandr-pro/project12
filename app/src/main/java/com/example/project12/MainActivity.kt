@@ -6,22 +6,29 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
+import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.util.ArrayList
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var tvStatus: TextView
+    private lateinit var pbMicLevel: ProgressBar
     private lateinit var tvPartial: TextView
+    private lateinit var tvDiagnostic: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnSpeakOnce: Button
     private lateinit var switchDirectMode: SwitchCompat
@@ -32,10 +39,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnClearHistory: Button
     private lateinit var tvCommandsGuide: TextView
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var localTts: TextToSpeech? = null
     private var localTtsReady = false
     private lateinit var localCommandProcessor: CommandProcessor
     private var pendingActionAfterPermission: (() -> Unit)? = null
+    private var waitingForSystemSpeechDialog = false
 
     private val busListener: () -> Unit = {
         renderState()
@@ -47,7 +56,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         setContentView(R.layout.activity_main)
 
         tvStatus = findViewById(R.id.tvStatus)
+        pbMicLevel = findViewById(R.id.pbMicLevel)
         tvPartial = findViewById(R.id.tvPartial)
+        tvDiagnostic = findViewById(R.id.tvDiagnostic)
         btnToggle = findViewById(R.id.btnToggle)
         btnSpeakOnce = findViewById(R.id.btnSpeakOnce)
         switchDirectMode = findViewById(R.id.switchDirectMode)
@@ -86,7 +97,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         btnSpeakOnce.setOnClickListener {
             ensureMicPermission {
-                triggerSingleVoiceCommand()
+                openSystemSpeechDialog()
             }
         }
 
@@ -117,12 +128,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         renderState()
     }
 
+    override fun onResume() {
+        super.onResume()
+        AssistantStateBus.setActiveActivity(this)
+        if (waitingForSystemSpeechDialog) {
+            // Returned from dialog if onActivityResult already handled or failed
+            waitingForSystemSpeechDialog = false
+        }
+    }
+
+    override fun onPause() {
+        AssistantStateBus.setActiveActivity(null)
+        if (AssistantStateBus.isServiceRunning && !waitingForSystemSpeechDialog) {
+            startAssistantService(action = VoiceAssistantService.ACTION_ACTIVITY_PAUSED)
+        }
+        super.onPause()
+    }
+
     override fun onStop() {
         AssistantStateBus.removeListener(busListener)
         super.onStop()
     }
 
     override fun onDestroy() {
+        AssistantStateBus.setActiveActivity(null)
+        mainHandler.removeCallbacksAndMessages(null)
         try {
             localTts?.stop()
             localTts?.shutdown()
@@ -145,10 +175,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun startAssistantService(action: String? = null, extraText: String? = null) {
+    private fun startAssistantService(
+        action: String? = null,
+        extraText: String? = null,
+        candidates: ArrayList<String>? = null
+    ) {
         val intent = Intent(this, VoiceAssistantService::class.java).apply {
             if (action != null) this.action = action
             if (extraText != null) putExtra(VoiceAssistantService.EXTRA_COMMAND_TEXT, extraText)
+            if (candidates != null) putStringArrayListExtra(VoiceAssistantService.EXTRA_CANDIDATES_LIST, candidates)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -163,21 +198,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     @Suppress("DEPRECATION")
-    private fun triggerSingleVoiceCommand() {
-        if (AssistantStateBus.isServiceRunning) {
-            startAssistantService(action = VoiceAssistantService.ACTION_FORCE_LISTEN)
-            return
+    private fun openSystemSpeechDialog() {
+        try {
+            localTts?.stop()
+        } catch (_: Exception) {
         }
 
-        val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Скажите любую команду…")
+        val launchDialog = Runnable {
+            val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Говорите команду (например: включи фонарик, погода)…")
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            }
+            try {
+                waitingForSystemSpeechDialog = true
+                startActivityForResult(speechIntent, REQ_SPEECH_ONCE)
+            } catch (_: Exception) {
+                waitingForSystemSpeechDialog = false
+                // Fallback if ROM has no system speech dialog Activity
+                startAssistantService(action = VoiceAssistantService.ACTION_FORCE_LISTEN)
+            }
         }
-        try {
-            startActivityForResult(speechIntent, REQ_SPEECH_ONCE)
-        } catch (_: Exception) {
-            startAssistantService()
+
+        if (AssistantStateBus.isServiceRunning) {
+            // Pause background recognizer first so the microphone isn't held by two sessions
+            startAssistantService(action = VoiceAssistantService.ACTION_PAUSE_FOR_DIALOG)
+            mainHandler.postDelayed(launchDialog, 200L)
+        } else {
+            launchDialog.run()
         }
     }
 
@@ -185,11 +234,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_SPEECH_ONCE && resultCode == Activity.RESULT_OK) {
-            val matches = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS).orEmpty()
-            val spoken = matches.firstOrNull()?.trim().orEmpty()
-            if (spoken.isNotEmpty()) {
-                executeLocalCommand(spoken)
+        if (requestCode == REQ_SPEECH_ONCE) {
+            waitingForSystemSpeechDialog = false
+            val matches = data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                .orEmpty()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+
+            if (resultCode == Activity.RESULT_OK && matches.isNotEmpty()) {
+                if (AssistantStateBus.isServiceRunning) {
+                    startAssistantService(
+                        action = VoiceAssistantService.ACTION_EXECUTE_TEXT,
+                        candidates = ArrayList(matches)
+                    )
+                } else {
+                    executeLocalCandidates(matches)
+                }
+            } else if (AssistantStateBus.isServiceRunning) {
+                startAssistantService(action = VoiceAssistantService.ACTION_RESUME_LISTENING)
             }
         }
     }
@@ -205,23 +268,41 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 extraText = cmd
             )
         } else {
-            executeLocalCommand(cmd)
+            executeLocalCandidates(listOf(cmd))
         }
     }
 
-    private fun executeLocalCommand(rawText: String) {
-        val (_, stripped) = localCommandProcessor.stripWakeWordPrefix(rawText)
-        val effective = stripped.ifEmpty { rawText }
-        val res = localCommandProcessor.process(effective)
+    private fun executeLocalCandidates(candidates: List<String>) {
+        if (candidates.isEmpty()) return
+        val primary = candidates.first()
+        val (_, stripped) = localCommandProcessor.stripWakeWordPrefix(primary)
+        val effective = stripped.ifEmpty { primary }
+
+        var res = localCommandProcessor.process(effective)
+        var chosenDisplay = primary
+
+        if (!res.matched && candidates.size > 1) {
+            for (alt in candidates.drop(1)) {
+                val (_, altStripped) = localCommandProcessor.stripWakeWordPrefix(alt)
+                val altCmd = altStripped.ifEmpty { alt }
+                val altRes = localCommandProcessor.process(altCmd)
+                if (altRes.matched) {
+                    res = altRes
+                    chosenDisplay = alt
+                    break
+                }
+            }
+        }
+
         res.speechRate?.let { localTts?.setSpeechRate(it) }
         if (res.stopSpeakingOnly) {
             localTts?.stop()
-            AssistantStateBus.addDialogue(rawText, "Озвучка остановлена.")
+            AssistantStateBus.addDialogue(chosenDisplay, "Озвучка остановлена.")
             return
         }
         val reply = res.spokenResponse
         if (!reply.isNullOrBlank()) {
-            AssistantStateBus.addDialogue(rawText, reply)
+            AssistantStateBus.addDialogue(chosenDisplay, reply)
             speakLocally(reply)
         }
     }
@@ -248,12 +329,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         )
         btnToggle.text = if (running) getString(R.string.btn_stop) else getString(R.string.btn_start)
 
+        pbMicLevel.progress = if (running && AssistantStateBus.isListeningNow) {
+            AssistantStateBus.micLevelPercent
+        } else {
+            0
+        }
+
         val partial = AssistantStateBus.partialSpeech
         tvPartial.text = when {
             partial.isNotEmpty() -> "🎤 Слышу: «$partial»"
-            running && AssistantStateBus.isListeningNow -> "Микрофон активен — говорите команду без ожидания"
-            running -> "Обработка ответа…"
-            else -> "Фоновый сервис выключен (доступна разовая кнопка микрофона или текстовый ввод)"
+            running && AssistantStateBus.isListeningNow -> "Говорите в микрофон — полоса выше покажет уровень голоса"
+            running -> "Обработка…"
+            else -> "Нажмите зелёную кнопку «🎤 Нажать и сказать команду» или включите постоянный режим"
+        }
+
+        val diag = AssistantStateBus.diagnosticInfo
+        if (diag.isNotBlank() && running) {
+            tvDiagnostic.visibility = View.VISIBLE
+            tvDiagnostic.text = diag
+        } else {
+            tvDiagnostic.visibility = View.GONE
         }
 
         if (switchDirectMode.isChecked != AssistantStateBus.directMode) {
